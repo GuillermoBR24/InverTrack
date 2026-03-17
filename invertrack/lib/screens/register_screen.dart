@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
-import 'package:invertrack/screens/home_screen.dart';
-import 'package:invertrack/screens/register_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _obscureConfirm = true;
 
   final supabase = Supabase.instance.client;
 
@@ -23,54 +23,35 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
+  Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
-      String emailToUse = _emailController.text.trim();
-
-      // Si no contiene '@' asumimos que es un username → buscar su email
-      if (!emailToUse.contains('@')) {
-        final result = await supabase
-            .rpc('get_email_by_username', params: {'p_username': emailToUse});
-
-        if (result == null || result.toString().isEmpty) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('No existe ningún usuario con ese nombre'),
-                backgroundColor: Color(0xFFFF6B6B),
-              ),
-            );
-          }
-          return;
-        }
-
-        emailToUse = result.toString();
-      }
-
-      await supabase.auth.signInWithPassword(
-        email: emailToUse,
+      await supabase.auth.signUp(
+        email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
       if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('¡Cuenta creada! Revisa tu correo para confirmarla.'),
+          ),
         );
+        Navigator.pop(context); // volver al login
       }
     } on AuthException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(e.message),
-            backgroundColor: const Color(0xFFFF6B6B),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
       }
@@ -82,7 +63,6 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -91,31 +71,26 @@ class _LoginScreenState extends State<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Logo / icono
                 Icon(
-                  Icons.lock_rounded,
+                  Icons.person_add_rounded,
                   size: 72,
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(height: 24),
 
-                // Título
                 Text(
-                  'Bienvenido',
+                  'Crear cuenta',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: Theme.of(context).textTheme.headlineMedium,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Inicia sesión para continuar',
+                  'Regístrate para comenzar',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 40),
 
-                // Formulario
                 Form(
                   key: _formKey,
                   child: Column(
@@ -125,13 +100,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         controller: _emailController,
                         keyboardType: TextInputType.emailAddress,
                         decoration: const InputDecoration(
-                          labelText: 'Correo o nombre de usuario',
-                          prefixIcon: Icon(Icons.person_outline_rounded),
+                          labelText: 'Correo electrónico',
+                          prefixIcon: Icon(Icons.email_outlined),
                         ),
                         validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingresa tu correo o nombre de usuario';
-                          }
+                          if (value == null || value.isEmpty) return 'Ingresa tu correo';
+                          if (!value.contains('@')) return 'Correo no válido';
                           return null;
                         },
                       ),
@@ -150,36 +124,50 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ? Icons.visibility_off_outlined
                                   : Icons.visibility_outlined,
                             ),
-                            onPressed: () {
-                              setState(() => _obscurePassword = !_obscurePassword);
-                            },
+                            onPressed: () =>
+                                setState(() => _obscurePassword = !_obscurePassword),
                           ),
                         ),
                         validator: (value) {
-                          if (value == null || value.isEmpty) return 'Ingresa tu contraseña';
+                          if (value == null || value.isEmpty) return 'Ingresa una contraseña';
                           if (value.length < 6) return 'Mínimo 6 caracteres';
                           return null;
                         },
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 16),
 
-                      // ¿Olvidaste tu contraseña?
-                      Align(
-                        alignment: Alignment.center,
-                        child: TextButton(
-                          onPressed: () {
-                            // Navegar a recuperación de contraseña
-                          },
-                          child: const Text('¿Olvidaste tu contraseña?'),
+                      // Confirmar contraseña
+                      TextFormField(
+                        controller: _confirmPasswordController,
+                        obscureText: _obscureConfirm,
+                        decoration: InputDecoration(
+                          labelText: 'Confirmar contraseña',
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscureConfirm
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                            ),
+                            onPressed: () =>
+                                setState(() => _obscureConfirm = !_obscureConfirm),
+                          ),
                         ),
+                        validator: (value) {
+                          if (value == null || value.isEmpty) return 'Confirma tu contraseña';
+                          if (value != _passwordController.text) {
+                            return 'Las contraseñas no coinciden';
+                          }
+                          return null;
+                        },
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 32),
 
-                      // Botón de login
+                      // Botón registro
                       SizedBox(
                         height: 52,
                         child: ElevatedButton(
-                          onPressed: _isLoading ? null : _login,
+                          onPressed: _isLoading ? null : _register,
                           child: _isLoading
                               ? const SizedBox(
                                   height: 22,
@@ -189,13 +177,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                     strokeWidth: 2.5,
                                   ),
                                 )
-                              : const Text(
-                                  'Iniciar sesión',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
+                              : const Text('Crear cuenta'),
                         ),
                       ),
                     ],
@@ -203,23 +185,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 28),
 
-                // Registro
+                // Volver al login
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      '¿No tienes cuenta? ',
+                      '¿Ya tienes cuenta? ',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     TextButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                        );
-                      },
+                      onPressed: () => Navigator.pop(context),
                       child: const Text(
-                        'Regístrate',
+                        'Inicia sesión',
                         style: TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
