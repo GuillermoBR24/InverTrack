@@ -297,4 +297,298 @@ class MarketService {
     {'name': 'iShares MSCI', 'symbol': 'EEM', 'type': 'etf', 'icon': 'I',
      'price': 0.0, 'change': 0.0},
   ];
+
+  static Future<List<Map<String, dynamic>>> searchCrypto(String query) async {
+    if (query.trim().isEmpty) return [];
+    try {
+      final res = await http.get(
+        Uri.parse('$_coinGeckoBase/search?query=${Uri.encodeComponent(query)}'),
+        headers: {'x-cg-demo-api-key': _coinGeckoKey},
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode != 200) return [];
+      final data  = jsonDecode(res.body);
+      final coins = (data['coins'] as List).take(20).toList();
+
+      return coins.map<Map<String, dynamic>>((c) {
+        final symbol = (c['symbol'] as String).toUpperCase();
+        return {
+          'name':   c['name'] as String,
+          'symbol': symbol,
+          'type':   'crypto',
+          'icon':   _cryptoIcon(symbol),
+          'coingecko_id': c['id'] as String,
+          'price':  0.0,
+          'change': 0.0,
+          'thumb':  c['thumb'] as String? ?? '',
+        };
+      }).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Busca acciones y ETFs por nombre o símbolo en Finnhub
+  static Future<List<Map<String, dynamic>>> searchStocksAndEtfs(
+      String query, String type) async {
+    if (query.trim().isEmpty) return [];
+    try {
+      final res = await http.get(
+        Uri.parse('$_finnhubBase/search?q=${Uri.encodeComponent(query)}&token=$_finnhubKey'),
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode != 200) return [];
+      final data   = jsonDecode(res.body);
+      final result = data['result'] as List? ?? [];
+
+      // Finnhub no diferencia stocks de ETFs en la búsqueda,
+      // filtramos por tipo de instrumento
+      final filtered = result.where((r) {
+        final rtype = (r['type'] as String? ?? '').toLowerCase();
+        if (type == 'stock') {
+          return rtype == 'common stock' || rtype == 'stock' || rtype == 'equity';
+        } else {
+          return rtype == 'etf' || rtype == 'etp' || rtype == 'exchange-traded fund';
+        }
+      }).take(20).toList();
+
+      return filtered.map<Map<String, dynamic>>((r) {
+        final symbol = (r['symbol'] as String).toUpperCase();
+        return {
+          'name':        r['description'] as String? ?? symbol,
+          'symbol':      symbol,
+          'type':        type,
+          'icon':        symbol.isNotEmpty ? symbol[0].toUpperCase() : '?',
+          'price':       0.0,
+          'change':      0.0,
+        };
+      }).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Obtiene precio live de una cripto por su CoinGecko id
+  static Future<Map<String, dynamic>?> fetchCryptoById(
+      String id, String symbol) async {
+    try {
+      final res = await http.get(
+        Uri.parse(
+          '$_coinGeckoBase/coins/$id'
+          '?localization=false&tickers=false&market_data=true'
+          '&community_data=true&developer_data=false',
+        ),
+        headers: {'x-cg-demo-api-key': _coinGeckoKey},
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode != 200) return null;
+      final data   = jsonDecode(res.body);
+      final market = data['market_data'];
+      final comm   = data['community_data'];
+
+      final price     = (market['current_price']['usd'] as num).toDouble();
+      final change24h = (market['price_change_percentage_24h'] as num?)?.toDouble() ?? 0.0;
+      final marketCap = (market['market_cap']['usd'] as num?)?.toDouble() ?? 0.0;
+      final volume    = (market['total_volume']['usd'] as num?)?.toDouble() ?? 0.0;
+      final circSupply= (market['circulating_supply'] as num?)?.toDouble() ?? 0.0;
+      final maxSupply = market['max_supply'];
+      final tvl       = (market['total_value_locked']?['usd'] as num?)?.toDouble();
+
+      int communityScore = 70;
+      if (comm != null) {
+        final twitter = (comm['twitter_followers'] as num?)?.toDouble() ?? 0;
+        final reddit  = (comm['reddit_subscribers'] as num?)?.toDouble() ?? 0;
+        communityScore =
+            ((twitter / 5000000 + reddit / 1000000).clamp(0, 1) * 100).toInt();
+        communityScore = communityScore.clamp(40, 99);
+      }
+
+      final result = <String, dynamic>{
+        'price':             price,
+        'change':            change24h,
+        'market_cap':        formatLargeNumber(marketCap),
+        'volume_24h':        formatLargeNumber(volume),
+        'circ_supply':       formatLargeNumber(circSupply),
+        'max_supply':        maxSupply != null
+            ? formatLargeNumber((maxSupply as num).toDouble())
+            : '∞',
+        'community_score':   communityScore,
+        'active_addresses':  '—',
+      };
+
+      if (tvl != null && tvl > 0) result['tvl'] = formatLargeNumber(tvl);
+      if (symbol.toUpperCase() == 'BTC') result['hash_rate'] = '~620 EH/s';
+
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Icono por símbolo para criptos conocidas, inicial para el resto
+  static String _cryptoIcon(String symbol) {
+    const icons = {
+      'BTC': '₿', 'ETH': 'Ξ', 'SOL': 'S', 'BNB': 'B',
+      'XRP': 'X', 'ADA': 'A', 'DOGE': 'D', 'DOT': 'D',
+      'MATIC': 'M', 'AVAX': 'A', 'LINK': 'L', 'UNI': 'U',
+      'LTC': 'L', 'ATOM': 'A', 'XLM': 'X', 'TRX': 'T',
+    };
+    return icons[symbol] ?? (symbol.isNotEmpty ? symbol[0] : '?');
+  }
+
+  /// Top 10 más populares de cada tipo (sin búsqueda activa)
+  static Future<List<Map<String, dynamic>>> fetchTop10(String type) async {
+    try {
+      if (type == 'crypto') {
+        final res = await http.get(
+          Uri.parse(
+            '$_coinGeckoBase/coins/markets'
+            '?vs_currency=usd&order=market_cap_desc&per_page=10&page=1'
+            '&sparkline=false&price_change_percentage=24h',
+          ),
+          headers: {'x-cg-demo-api-key': _coinGeckoKey},
+        ).timeout(const Duration(seconds: 8));
+
+        if (res.statusCode != 200) return [];
+        final list = jsonDecode(res.body) as List;
+
+        return list.map<Map<String, dynamic>>((c) {
+          final symbol = (c['symbol'] as String).toUpperCase();
+          final price  = (c['current_price'] as num?)?.toDouble() ?? 0.0;
+          final change = (c['price_change_percentage_24h'] as num?)?.toDouble() ?? 0.0;
+          return {
+            'name':         c['name'] as String,
+            'symbol':       symbol,
+            'type':         'crypto',
+            'icon':         _cryptoIcon(symbol),
+            'coingecko_id': c['id'] as String,
+            'price':        price,
+            'change':       change,
+            'thumb':        c['image'] as String? ?? '',
+          };
+        }).toList();
+
+      } else if (type == 'stock') {
+        // Top 10 acciones más conocidas — Finnhub no tiene endpoint de ranking
+        // así que usamos una lista curada y obtenemos precios en paralelo
+        const topStocks = [
+          {'name': 'Apple Inc.',  'symbol': 'AAPL', 'icon': 'A'},
+          {'name': 'Microsoft',   'symbol': 'MSFT', 'icon': 'M'},
+          {'name': 'Nvidia',      'symbol': 'NVDA', 'icon': 'N'},
+          {'name': 'Amazon',      'symbol': 'AMZN', 'icon': 'A'},
+          {'name': 'Alphabet',    'symbol': 'GOOGL','icon': 'G'},
+          {'name': 'Meta',        'symbol': 'META', 'icon': 'M'},
+          {'name': 'Tesla',       'symbol': 'TSLA', 'icon': 'T'},
+          {'name': 'Berkshire',   'symbol': 'BRK.B','icon': 'B'},
+          {'name': 'JPMorgan',    'symbol': 'JPM',  'icon': 'J'},
+          {'name': 'Visa',        'symbol': 'V',    'icon': 'V'},
+        ];
+
+        final results = await Future.wait(
+          topStocks.map((s) async {
+            final live = await fetchStock(s['symbol']!);
+            return <String, dynamic>{
+              'name':   s['name'],
+              'symbol': s['symbol'],
+              'type':   'stock',
+              'icon':   s['icon'],
+              'price':  live?['price']  ?? 0.0,
+              'change': live?['change'] ?? 0.0,
+              if (live != null) ...live,
+            };
+          }),
+        );
+        return results;
+
+      } else {
+        // Top 10 ETFs más populares
+        const topEtfs = [
+          {'name': 'S&P 500 ETF',    'symbol': 'SPY',  'icon': 'S'},
+          {'name': 'Nasdaq-100 ETF', 'symbol': 'QQQ',  'icon': 'Q'},
+          {'name': 'Total Market',   'symbol': 'VTI',  'icon': 'V'},
+          {'name': 'S&P 500 Vang.',  'symbol': 'VOO',  'icon': 'V'},
+          {'name': 'Growth ETF',     'symbol': 'VUG',  'icon': 'V'},
+          {'name': 'iShares Core',   'symbol': 'IVV',  'icon': 'I'},
+          {'name': 'Gold ETF',       'symbol': 'GLD',  'icon': 'G'},
+          {'name': 'iShares MSCI',   'symbol': 'EEM',  'icon': 'I'},
+          {'name': 'Real Estate',    'symbol': 'VNQ',  'icon': 'V'},
+          {'name': 'Bond ETF',       'symbol': 'BND',  'icon': 'B'},
+        ];
+
+        final results = await Future.wait(
+          topEtfs.map((e) async {
+            final live = await fetchEtf(e['symbol']!);
+            return <String, dynamic>{
+              'name':   e['name'],
+              'symbol': e['symbol'],
+              'type':   'etf',
+              'icon':   e['icon'],
+              'price':  live?['price']  ?? 0.0,
+              'change': live?['change'] ?? 0.0,
+              if (live != null) ...live,
+            };
+          }),
+        );
+        return results;
+      }
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Devuelve la URL del logo de una cripto por su símbolo
+  static Future<String?> fetchCryptoThumb(String symbol) async {
+    final id = _cryptoIds[symbol.toUpperCase()];
+    if (id == null) return null;
+    try {
+      final res = await http.get(
+        Uri.parse('$_coinGeckoBase/coins/$id?localization=false'
+            '&tickers=false&market_data=false'
+            '&community_data=false&developer_data=false'),
+        headers: {'x-cg-demo-api-key': _coinGeckoKey},
+      ).timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body);
+      return data['image']?['thumb'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Expone el id de CoinGecko para un símbolo dado
+  static String? getCoinGeckoId(String symbol) =>
+      _cryptoIds[symbol.toUpperCase()];
+
+      /// Obtiene la URL del logo de una cripto directamente por su símbolo
+  static Future<String?> fetchCryptoImageUrl(String symbol) async {
+    final id = _cryptoIds[symbol.toUpperCase()];
+    if (id != null) {
+      // Si está en el mapa conocido, usar markets endpoint (más fiable)
+      try {
+        final res = await http.get(
+          Uri.parse(
+            '$_coinGeckoBase/coins/markets'
+            '?vs_currency=usd&ids=$id&per_page=1&page=1',
+          ),
+          headers: {'x-cg-demo-api-key': _coinGeckoKey},
+        ).timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200) {
+          final list = jsonDecode(res.body) as List;
+          if (list.isNotEmpty) {
+            return list.first['image'] as String?;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Si no está en el mapa, buscar por símbolo
+    try {
+      final results = await searchCrypto(symbol);
+      if (results.isNotEmpty) {
+        return results.first['thumb'] as String?;
+      }
+    } catch (_) {}
+
+    return null;
+  }
 }

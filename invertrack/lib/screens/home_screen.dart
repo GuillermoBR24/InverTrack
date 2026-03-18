@@ -75,8 +75,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() => _assets = List<Map<String, dynamic>>.from(data));
       }
-
-      // Refresca precios desde API tras cargar desde BD
       await _refreshPrices();
     } catch (e) {
       if (mounted) {
@@ -95,18 +93,43 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final updated = await Future.wait(
         _assets.map((asset) async {
-          final live = await MarketService.fetchAsset(
-            asset['symbol'] as String,
-            asset['type']   as String,
-          );
+          // Obtener thumb para criptos primero (en paralelo con el precio)
+          String? thumb = asset['thumb'] as String?;
+
+          final futures = await Future.wait([
+            MarketService.fetchAsset(
+              asset['symbol'] as String,
+              asset['type']   as String,
+            ),
+            // Solo buscar thumb si es cripto y no lo tenemos aún
+            if (asset['type'] == 'crypto' && (thumb == null || thumb.isEmpty))
+              MarketService.fetchCryptoImageUrl(asset['symbol'] as String)
+            else
+              Future.value(null),
+          ]);
+
+          final live     = futures[0] as Map<String, dynamic>?;
+          final newThumb = futures[1] as String?;
+
+          if (newThumb != null && newThumb.isNotEmpty) thumb = newThumb;
+          // También intentar coger thumb del propio live (fetchCryptoById lo incluye)
+          if ((thumb == null || thumb.isEmpty) && live != null) {
+            thumb = live['thumb'] as String?;
+          }
+
           if (live != null) {
             return {
               ...asset,
               'price':  live['price'],
               'change': live['change'],
+              if (thumb != null && thumb.isNotEmpty) 'thumb': thumb,
             };
           }
-          return asset;
+
+          return {
+            ...asset,
+            if (thumb != null && thumb.isNotEmpty) 'thumb': thumb,
+          };
         }),
       );
       if (mounted) {
@@ -115,15 +138,24 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  double get _totalValue => _assets.fold(
-      0, (sum, a) => sum + ((a['value'] as num?)?.toDouble() ?? 0));
+  // Valor actual total = suma de (precio live × cantidad)
+  double get _totalCurrentValue => _assets.fold(0, (sum, a) {
+    final price    = (a['price']    as num?)?.toDouble() ?? 0.0;
+    final quantity = (a['quantity'] as num?)?.toDouble() ?? 0.0;
+    final invested = (a['value']    as num?)?.toDouble() ?? 0.0;
+    return sum + (price > 0 ? price * quantity : invested);
+  });
 
-  double get _totalChangePercent {
-    if (_assets.isEmpty) return 0;
-    final total = _assets.fold(
-        0.0, (s, a) => s + ((a['change'] as num?)?.toDouble() ?? 0));
-    return total / _assets.length;
-  }
+  // Total invertido = suma de value (lo que se pagó en su momento)
+  double get _totalInvested => _assets.fold(
+      0, (sum, a) => sum + ((a['value'] as num?)?.toDouble() ?? 0.0));
+
+  // Ganancia/pérdida total en $
+  double get _totalGainLoss => _totalCurrentValue - _totalInvested;
+
+  // Variación total del portfolio en % respecto a lo invertido
+  double get _totalGainPct =>
+      _totalInvested > 0 ? (_totalGainLoss / _totalInvested) * 100 : 0.0;
 
   @override
   Widget build(BuildContext context) {
@@ -132,6 +164,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
+
+    final gainIsPos = _totalGainLoss >= 0;
+    final gainColor = gainIsPos
+        ? const Color(0xFF69F0AE)
+        : const Color(0xFFFF6B6B);
 
     return Scaffold(
       appBar: AppBar(
@@ -205,7 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
                 children: [
 
-                  // ── TARJETA TOTAL PORTFOLIO ────────────────────────────
+                  // ── TARJETA TOTAL PORTFOLIO ──────────────────────────
                   Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
@@ -236,13 +273,52 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          '\$${_totalValue.toStringAsFixed(2)}',
+                          '\$${_totalCurrentValue.toStringAsFixed(2)}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 36,
                             fontWeight: FontWeight.bold,
                             letterSpacing: -1,
                           ),
+                        ),
+                        const SizedBox(height: 6),
+                        // Ganancia total en $ y %
+                        Row(
+                          children: [
+                            Icon(
+                              gainIsPos
+                                  ? Icons.trending_up_rounded
+                                  : Icons.trending_down_rounded,
+                              color: gainColor,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${gainIsPos ? '+' : ''}\$${_totalGainLoss.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                color: gainColor,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: gainColor.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                '${gainIsPos ? '+' : ''}${_totalGainPct.toStringAsFixed(2)}%',
+                                style: TextStyle(
+                                  color: gainColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         Row(
@@ -254,13 +330,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             const SizedBox(width: 24),
                             _MiniStat(
-                              label: 'Variación media',
+                              label: 'Invertido',
                               value:
-                                  '${_totalChangePercent >= 0 ? '+' : ''}${_totalChangePercent.toStringAsFixed(2)}%',
-                              icon: Icons.trending_up_rounded,
-                              valueColor: _totalChangePercent >= 0
-                                  ? const Color(0xFF69F0AE)
-                                  : const Color(0xFFFF6B6B),
+                                  '\$${_totalInvested.toStringAsFixed(2)}',
+                              icon: Icons.attach_money_rounded,
+                              valueColor: Colors.white,
                             ),
                           ],
                         ),
@@ -270,7 +344,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   const SizedBox(height: 24),
 
-                  // ── DISTRIBUCIÓN ───────────────────────────────────────
+                  // ── DISTRIBUCIÓN ─────────────────────────────────────
                   Text('Distribución',
                       style: tt.bodyLarge
                           ?.copyWith(fontWeight: FontWeight.w600)),
@@ -308,7 +382,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   const SizedBox(height: 28),
 
-                  // ── CABECERA LISTA ─────────────────────────────────────
+                  // ── CABECERA LISTA ────────────────────────────────────
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -352,7 +426,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ── LISTA O ESTADO VACÍO ───────────────────────────────
+                  // ── LISTA O ESTADO VACÍO ──────────────────────────────
                   if (_assets.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 40),
@@ -380,7 +454,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               context,
                               MaterialPageRoute(
                                 builder: (_) =>
-                                    AssetPortfolioDetailScreen(asset: asset),
+                                    AssetPortfolioDetailScreen(
+                                        asset: asset),
                               ),
                             );
                             if (result == 'deleted') await _loadAssets();
@@ -472,7 +547,8 @@ class _TypeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        padding:
+            const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
         decoration: BoxDecoration(
           color: const Color(0xFF1E2D3D),
           borderRadius: BorderRadius.circular(14),
@@ -519,15 +595,20 @@ class _AssetTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final price      = (asset['price']    as num?)?.toDouble() ?? 0.0;
-    final change     = (asset['change']   as num?)?.toDouble() ?? 0.0;
-    final value      = (asset['value']    as num?)?.toDouble() ?? 0.0;
-    final quantity   = (asset['quantity'] as num?)?.toDouble() ?? 0.0;
-    final isPositive = change >= 0;
-    final changeColor = isPositive
+    final price        = (asset['price']    as num?)?.toDouble() ?? 0.0;
+    final invested     = (asset['value']    as num?)?.toDouble() ?? 0.0;
+    final quantity     = (asset['quantity'] as num?)?.toDouble() ?? 0.0;
+    final currentValue = price > 0 ? price * quantity : invested;
+    final gainLoss     = currentValue - invested;
+    // % ganancia = (ganancia / invertido) × 100
+    final gainPct      = invested > 0 ? (gainLoss / invested) * 100 : 0.0;
+    final gainIsPos    = gainLoss >= 0;
+    final gainColor    = gainIsPos
         ? const Color(0xFF69F0AE)
         : const Color(0xFFFF6B6B);
-    final typeColor = _typeColors[asset['type']] ?? const Color(0xFF4FC3F7);
+    final typeColor    =
+        _typeColors[asset['type']] ?? const Color(0xFF4FC3F7);
+    final thumb        = asset['thumb'] as String?;
 
     final String quantityStr = quantity < 0.001
         ? quantity.toStringAsFixed(8)
@@ -545,6 +626,7 @@ class _AssetTile extends StatelessWidget {
       ),
       child: Row(
         children: [
+          // ── Icono / logo ─────────────────────────────────────────────
           Container(
             width: 44, height: 44,
             decoration: BoxDecoration(
@@ -552,15 +634,33 @@ class _AssetTile extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             alignment: Alignment.center,
-            child: Text(
-              asset['icon'] as String? ?? '?',
-              style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: typeColor),
-            ),
+            child: thumb != null && thumb.isNotEmpty
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      thumb,
+                      width: 28, height: 28,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => Text(
+                        asset['icon'] as String? ?? '?',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: typeColor),
+                      ),
+                    ),
+                  )
+                : Text(
+                    asset['icon'] as String? ?? '?',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: typeColor),
+                  ),
           ),
           const SizedBox(width: 14),
+
+          // ── Nombre + símbolo + badge + cantidad ───────────────────────
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -606,39 +706,45 @@ class _AssetTile extends StatelessWidget {
                 Text(
                   '$quantityStr ${asset['symbol'] ?? ''}',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontSize: 11, color: typeColor.withOpacity(0.8)),
+                      fontSize: 11,
+                      color: typeColor.withOpacity(0.8)),
                 ),
               ],
             ),
           ),
+
+          // ── Valor actual + ganancia $ + ganancia % ────────────────────
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              // Valor actual
               Text(
-                '\$${value.toStringAsFixed(2)}',
+                '\$${currentValue.toStringAsFixed(2)}',
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     fontWeight: FontWeight.w600, fontSize: 14),
               ),
               const SizedBox(height: 2),
+              // Ganancia/pérdida en $
               Text(
-                '\$${price.toStringAsFixed(2)} / ud.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(fontSize: 11),
+                '${gainIsPos ? '+' : ''}\$${gainLoss.toStringAsFixed(2)}',
+                style: TextStyle(
+                    color: gainColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500),
               ),
               const SizedBox(height: 4),
+              // % ganancia total respecto a lo invertido
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: changeColor.withOpacity(0.12),
+                  color: gainColor.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  '${isPositive ? '+' : ''}${change.toStringAsFixed(2)}%',
+                  '${gainIsPos ? '+' : ''}${gainPct.toStringAsFixed(2)}%',
                   style: TextStyle(
-                      color: changeColor,
+                      color: gainColor,
                       fontSize: 12,
                       fontWeight: FontWeight.w600),
                 ),
