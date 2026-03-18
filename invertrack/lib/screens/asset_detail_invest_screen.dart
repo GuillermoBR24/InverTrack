@@ -11,12 +11,17 @@ class AssetDetailInvestScreen extends StatefulWidget {
       _AssetDetailInvestScreenState();
 }
 
+// Modo de entrada de la inversión
+enum _InputMode { dinero, cantidad }
+
 class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
-  final supabase = Supabase.instance.client;
-  final _formKey = GlobalKey<FormState>();
-  final _amountController = TextEditingController();
+  final supabase    = Supabase.instance.client;
+  final _formKey    = GlobalKey<FormState>();
+  final _buyPriceController  = TextEditingController(); // precio de compra
+  final _mainInputController = TextEditingController(); // dinero o cantidad
   bool _isSaving     = false;
   bool _loadingPrice = false;
+  _InputMode _inputMode = _InputMode.dinero;
 
   late Map<String, dynamic> _asset;
 
@@ -27,6 +32,13 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
     _refreshPrice();
   }
 
+  @override
+  void dispose() {
+    _buyPriceController.dispose();
+    _mainInputController.dispose();
+    super.dispose();
+  }
+
   Future<void> _refreshPrice() async {
     setState(() => _loadingPrice = true);
     try {
@@ -35,7 +47,16 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
         _asset['type']   as String,
       );
       if (live != null && mounted) {
-        setState(() => _asset = {..._asset, ...live});
+        setState(() {
+          _asset = {..._asset, ...live};
+          // Pre-rellenar precio de compra con el precio actual si está vacío
+          if (_buyPriceController.text.isEmpty && live['price'] != null) {
+            final p = (live['price'] as num).toDouble();
+            if (p > 0) {
+              _buyPriceController.text = p.toStringAsFixed(2);
+            }
+          }
+        });
       }
     } finally {
       if (mounted) setState(() => _loadingPrice = false);
@@ -48,22 +69,43 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
     'etf':    Color(0xFF69F0AE),
   };
 
-  Color  get _color => _typeColors[_asset['type']] ?? const Color(0xFF4FC3F7);
-  double get _price => (_asset['price'] as num?)?.toDouble() ?? 0.0;
+  Color  get _color       => _typeColors[_asset['type']] ?? const Color(0xFF4FC3F7);
+  double get _currentPrice => (_asset['price'] as num?)?.toDouble() ?? 0.0;
 
-  double get _amountInvested =>
-      double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0;
+  // Precio de compra que introdujo el usuario (o el actual si está vacío)
+  double get _buyPrice {
+    final v = double.tryParse(
+        _buyPriceController.text.replaceAll(',', '.')) ?? 0;
+    return v > 0 ? v : _currentPrice;
+  }
 
-  double get _unitsCalculated =>
-      _amountInvested > 0 && _price > 0 ? _amountInvested / _price : 0;
+  // Valor del campo principal (dinero o cantidad)
+  double get _mainValue =>
+      double.tryParse(_mainInputController.text.replaceAll(',', '.')) ?? 0;
+
+  // Cantidad comprada calculada
+  double get _quantity {
+    if (_inputMode == _InputMode.dinero) {
+      return _buyPrice > 0 ? _mainValue / _buyPrice : 0;
+    } else {
+      return _mainValue;
+    }
+  }
+
+  // Dinero total invertido calculado
+  double get _totalInvested {
+    if (_inputMode == _InputMode.dinero) {
+      return _mainValue;
+    } else {
+      return _mainValue * _buyPrice;
+    }
+  }
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
     try {
-      final uid   = supabase.auth.currentUser!.id;
-      final qty   = _unitsCalculated;
-      final total = _amountInvested;
+      final uid = supabase.auth.currentUser!.id;
 
       await supabase.from('assets').insert({
         'user_id':    uid,
@@ -71,10 +113,10 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
         'symbol':     _asset['symbol'],
         'type':       _asset['type'],
         'icon':       _asset['icon'],
-        'quantity':   qty,
-        'buy_price':  _price,
-        'value':      total,
-        'price':      _price,
+        'quantity':   _quantity,
+        'buy_price':  _buyPrice,
+        'value':      _totalInvested,
+        'price':      _currentPrice,
         'change':     (_asset['change'] as num?)?.toDouble() ?? 0.0,
         'created_at': DateTime.now().toIso8601String(),
       });
@@ -85,9 +127,9 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
           'symbol': _asset['symbol'],
           'type':   _asset['type'],
           'icon':   _asset['icon'],
-          'price':  _price,
+          'price':  _currentPrice,
           'change': (_asset['change'] as num?)?.toDouble() ?? 0.0,
-          'value':  total,
+          'value':  _totalInvested,
         });
       }
     } catch (e) {
@@ -103,12 +145,6 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
   }
 
   @override
-  void dispose() {
-    _amountController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final tt   = Theme.of(context).textTheme;
     final type = _asset['type'] as String;
@@ -118,6 +154,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
 
     final change = (_asset['change'] as num?)?.toDouble() ?? 0.0;
     final isPos  = change >= 0;
+
+    final hasValidInput = _mainValue > 0 && _buyPrice > 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -166,7 +204,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
           children: [
 
-            // ── CABECERA PRECIO ────────────────────────────────────────
+            // ── CABECERA PRECIO ACTUAL ─────────────────────────────────
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -183,6 +221,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
               ),
               child: Row(
                 children: [
+                  // Icono / thumb
                   Container(
                     width: 52, height: 52,
                     decoration: BoxDecoration(
@@ -190,11 +229,33 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                     alignment: Alignment.center,
-                    child: Text(_asset['icon'] as String,
+                    child: () {
+                      final thumb = _asset['thumb'] as String?;
+                      if (thumb != null && thumb.isNotEmpty) {
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.network(
+                            thumb,
+                            width: 34, height: 34,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => Text(
+                              _asset['icon'] as String? ?? '?',
+                              style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: _color),
+                            ),
+                          ),
+                        );
+                      }
+                      return Text(
+                        _asset['icon'] as String? ?? '?',
                         style: TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
-                            color: _color)),
+                            color: _color),
+                      );
+                    }(),
                   ),
                   const SizedBox(width: 16),
                   Expanded(
@@ -217,8 +278,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                                 ),
                               )
                             : Text(
-                                _price > 0
-                                    ? '\$${_price.toStringAsFixed(2)}'
+                                _currentPrice > 0
+                                    ? '\$${_currentPrice.toStringAsFixed(2)}'
                                     : '—',
                                 style: TextStyle(
                                   color: _color,
@@ -230,7 +291,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       ],
                     ),
                   ),
-                  if (!_loadingPrice && _price > 0)
+                  if (!_loadingPrice && _currentPrice > 0)
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 5),
@@ -275,7 +336,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
             const SizedBox(height: 24),
 
             // ── INVERSIÓN ──────────────────────────────────────────────
-            _SectionLabel(label: 'Tu inversión'),
+            _SectionLabel(label: 'Registrar inversión'),
             const SizedBox(height: 12),
 
             Container(
@@ -286,21 +347,33 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                 border: Border.all(color: borderColor),
               ),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+
+                  // ── PRECIO DE COMPRA ───────────────────────────────────
+                  Text('Precio al que compraste',
+                      style: tt.bodyMedium?.copyWith(fontSize: 12)),
+                  const SizedBox(height: 8),
                   TextFormField(
-                    controller: _amountController,
+                    controller: _buyPriceController,
                     keyboardType: const TextInputType.numberWithOptions(
                         decimal: true),
                     onChanged: (_) => setState(() {}),
                     style: const TextStyle(
-                        fontSize: 22, fontWeight: FontWeight.bold),
+                        fontSize: 18, fontWeight: FontWeight.w600),
                     decoration: InputDecoration(
-                      labelText: 'Cantidad a invertir',
+                      hintText: _currentPrice > 0
+                          ? _currentPrice.toStringAsFixed(2)
+                          : '0.00',
                       prefixText: '\$ ',
                       prefixStyle: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
                           color: _color),
+                      helperText: _currentPrice > 0
+                          ? 'Precio actual: \$${_currentPrice.toStringAsFixed(2)}'
+                          : null,
+                      helperStyle: tt.bodyMedium?.copyWith(fontSize: 11),
                       border: InputBorder.none,
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
@@ -308,7 +381,11 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       contentPadding: EdgeInsets.zero,
                     ),
                     validator: (v) {
-                      if (v == null || v.isEmpty) return 'Ingresa el importe';
+                      if (v == null || v.isEmpty) {
+                        // Si está vacío usamos el precio actual
+                        if (_currentPrice <= 0) return 'Ingresa el precio de compra';
+                        return null;
+                      }
                       final n = double.tryParse(v.replaceAll(',', '.'));
                       if (n == null) return 'Número no válido';
                       if (n <= 0) return 'Debe ser mayor que 0';
@@ -316,45 +393,277 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                     },
                   ),
 
-                  if (_amountInvested > 0 && _price > 0) ...[
+                  Divider(height: 28, color: borderColor),
+
+                  // ── SELECTOR MODO ──────────────────────────────────────
+                  Text('¿Cómo quieres indicar la compra?',
+                      style: tt.bodyMedium?.copyWith(fontSize: 12)),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _inputMode = _InputMode.dinero;
+                            _mainInputController.clear();
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _inputMode == _InputMode.dinero
+                                  ? _color.withOpacity(0.15)
+                                  : const Color(0xFF0A0E1A),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: _inputMode == _InputMode.dinero
+                                    ? _color
+                                    : borderColor,
+                                width: _inputMode == _InputMode.dinero
+                                    ? 1.5
+                                    : 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.attach_money_rounded,
+                                    size: 16,
+                                    color: _inputMode == _InputMode.dinero
+                                        ? _color
+                                        : const Color(0xFF7BA7C2)),
+                                const SizedBox(width: 4),
+                                Text('En dinero',
+                                    style: TextStyle(
+                                      color: _inputMode == _InputMode.dinero
+                                          ? _color
+                                          : const Color(0xFF7BA7C2),
+                                      fontSize: 13,
+                                      fontWeight: _inputMode == _InputMode.dinero
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                    )),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _inputMode = _InputMode.cantidad;
+                            _mainInputController.clear();
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 10),
+                            decoration: BoxDecoration(
+                              color: _inputMode == _InputMode.cantidad
+                                  ? _color.withOpacity(0.15)
+                                  : const Color(0xFF0A0E1A),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: _inputMode == _InputMode.cantidad
+                                    ? _color
+                                    : borderColor,
+                                width: _inputMode == _InputMode.cantidad
+                                    ? 1.5
+                                    : 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.numbers_rounded,
+                                    size: 16,
+                                    color: _inputMode == _InputMode.cantidad
+                                        ? _color
+                                        : const Color(0xFF7BA7C2)),
+                                const SizedBox(width: 4),
+                                Text('En cantidad',
+                                    style: TextStyle(
+                                      color: _inputMode == _InputMode.cantidad
+                                          ? _color
+                                          : const Color(0xFF7BA7C2),
+                                      fontSize: 13,
+                                      fontWeight: _inputMode == _InputMode.cantidad
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                    )),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // ── CAMPO PRINCIPAL ────────────────────────────────────
+                  TextFormField(
+                    controller: _mainInputController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true),
+                    onChanged: (_) => setState(() {}),
+                    style: const TextStyle(
+                        fontSize: 22, fontWeight: FontWeight.bold),
+                    decoration: InputDecoration(
+                      labelText: _inputMode == _InputMode.dinero
+                          ? 'Dinero invertido'
+                          : 'Cantidad comprada',
+                      prefixText: _inputMode == _InputMode.dinero
+                          ? '\$ '
+                          : '',
+                      suffixText: _inputMode == _InputMode.cantidad
+                          ? '  ${_asset['symbol']}'
+                          : '',
+                      prefixStyle: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: _color),
+                      suffixStyle: TextStyle(
+                          fontSize: 14,
+                          color: _color.withOpacity(0.7)),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      filled: false,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    validator: (v) {
+                      if (v == null || v.isEmpty) {
+                        return _inputMode == _InputMode.dinero
+                            ? 'Ingresa el dinero invertido'
+                            : 'Ingresa la cantidad comprada';
+                      }
+                      final n = double.tryParse(v.replaceAll(',', '.'));
+                      if (n == null) return 'Número no válido';
+                      if (n <= 0) return 'Debe ser mayor que 0';
+                      return null;
+                    },
+                  ),
+
+                  // ── RESUMEN CALCULADO ──────────────────────────────────
+                  if (hasValidInput) ...[
                     const SizedBox(height: 16),
                     Divider(color: borderColor, height: 1),
                     const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Recibirás',
-                            style: tt.bodyMedium?.copyWith(fontSize: 13)),
-                        RichText(
-                          text: TextSpan(children: [
-                            TextSpan(
-                              text: _unitsCalculated < 0.001
-                                  ? _unitsCalculated.toStringAsFixed(8)
-                                  : _unitsCalculated.toStringAsFixed(6),
-                              style: TextStyle(
-                                  color: _color,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                            TextSpan(
-                              text: '  ${_asset['symbol']}',
-                              style: tt.bodyMedium?.copyWith(fontSize: 13),
-                            ),
-                          ]),
-                        ),
-                      ],
-                    ),
+
+                    if (_inputMode == _InputMode.dinero) ...[
+                      // Modo dinero → muestra la cantidad calculada
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Unidades que compraste',
+                              style: tt.bodyMedium?.copyWith(fontSize: 13)),
+                          RichText(
+                            text: TextSpan(children: [
+                              TextSpan(
+                                text: _quantity < 0.001
+                                    ? _quantity.toStringAsFixed(8)
+                                    : _quantity < 1
+                                        ? _quantity.toStringAsFixed(6)
+                                        : _quantity.toStringAsFixed(4),
+                                style: TextStyle(
+                                    color: _color,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              TextSpan(
+                                text: '  ${_asset['symbol']}',
+                                style: tt.bodyMedium?.copyWith(fontSize: 13),
+                              ),
+                            ]),
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      // Modo cantidad → muestra el dinero total invertido
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Total invertido',
+                              style: tt.bodyMedium?.copyWith(fontSize: 13)),
+                          Text(
+                            '\$${_totalInvested.toStringAsFixed(2)}',
+                            style: TextStyle(
+                                color: _color,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ],
+
                     const SizedBox(height: 8),
+
+                    // Precio de compra usado
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Precio por unidad',
+                        Text('Precio de compra usado',
                             style: tt.bodyMedium?.copyWith(fontSize: 13)),
-                        Text('\$${_price.toStringAsFixed(2)}',
+                        Text('\$${_buyPrice.toStringAsFixed(2)}',
                             style: tt.bodyLarge?.copyWith(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500)),
                       ],
+                    ),
+
+                    // Resumen final en card destacada
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _color.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: _color.withOpacity(0.25)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Cantidad',
+                                  style: tt.bodyMedium
+                                      ?.copyWith(fontSize: 11)),
+                              Text(
+                                _quantity < 0.001
+                                    ? _quantity.toStringAsFixed(8)
+                                    : _quantity < 1
+                                        ? _quantity.toStringAsFixed(6)
+                                        : _quantity.toStringAsFixed(4),
+                                style: TextStyle(
+                                    color: _color,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                          Icon(Icons.swap_horiz_rounded,
+                              color: _color.withOpacity(0.5), size: 20),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('Invertido',
+                                  style: tt.bodyMedium
+                                      ?.copyWith(fontSize: 11)),
+                              Text(
+                                '\$${_totalInvested.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                    color: _color,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
@@ -367,7 +676,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
             SizedBox(
               height: 52,
               child: ElevatedButton(
-                onPressed: (_isSaving || _price == 0) ? null : _save,
+                onPressed: (_isSaving || _currentPrice == 0) ? null : _save,
                 style: ElevatedButton.styleFrom(
                   backgroundColor:
                       Theme.of(context).colorScheme.secondary,
@@ -378,8 +687,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2.5))
                     : Text(
-                        _amountInvested > 0 && _price > 0
-                            ? 'Invertir \$${_amountInvested.toStringAsFixed(2)} en ${_asset['symbol']}'
+                        hasValidInput
+                            ? 'Guardar inversión de \$${_totalInvested.toStringAsFixed(2)}'
                             : 'Confirmar inversión',
                         style: const TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600),
@@ -457,7 +766,8 @@ class _CryptoMetrics extends StatelessWidget {
               icon: Icons.group_rounded, color: color,
               cardColor: cardColor, borderColor: borderColor,
               tooltip: 'Actividad y transparencia de la comunidad',
-              valueColor: _scoreColor(asset['community_score'] ?? 0))),
+              valueColor: _scoreColor(
+                  (asset['community_score'] as num?)?.toInt() ?? 0))),
         ]),
       ] else if (hasTvl) ...[
         Row(children: [
@@ -473,7 +783,8 @@ class _CryptoMetrics extends StatelessWidget {
               icon: Icons.group_rounded, color: color,
               cardColor: cardColor, borderColor: borderColor,
               tooltip: 'Actividad y transparencia de la comunidad',
-              valueColor: _scoreColor(asset['community_score'] ?? 0))),
+              valueColor: _scoreColor(
+                  (asset['community_score'] as num?)?.toInt() ?? 0))),
         ]),
       ] else ...[
         Row(children: [
@@ -483,7 +794,8 @@ class _CryptoMetrics extends StatelessWidget {
               icon: Icons.group_rounded, color: color,
               cardColor: cardColor, borderColor: borderColor,
               tooltip: 'Actividad y transparencia de la comunidad',
-              valueColor: _scoreColor(asset['community_score'] ?? 0))),
+              valueColor: _scoreColor(
+                  (asset['community_score'] as num?)?.toInt() ?? 0))),
           const SizedBox(width: 10),
           const Expanded(child: SizedBox()),
         ]),
@@ -520,8 +832,8 @@ class _StockMetrics extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pe   = (asset['pe_ratio']     as num?)?.toDouble();
-    final debt = (asset['debt_equity']  as num?)?.toDouble();
+    final pe   = (asset['pe_ratio']    as num?)?.toDouble();
+    final debt = (asset['debt_equity'] as num?)?.toDouble();
 
     return Column(children: [
       Row(children: [
@@ -618,7 +930,9 @@ class _EtfMetrics extends StatelessWidget {
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Expense Ratio',
-            value: expense != null ? '${expense.toStringAsFixed(2)}%' : '—',
+            value: expense != null
+                ? '${expense.toStringAsFixed(2)}%'
+                : '—',
             icon: Icons.receipt_long_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Comisión anual de administración. Menor = mejor',
