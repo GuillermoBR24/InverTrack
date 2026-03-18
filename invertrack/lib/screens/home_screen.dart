@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:invertrack/screens/add_asset_screen.dart';
 import 'package:invertrack/screens/asset_portfolio_detail_screen.dart';
 import 'package:invertrack/screens/profile_screen.dart';
+import 'package:invertrack/services/market_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -15,9 +17,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final supabase = Supabase.instance.client;
 
   List<Map<String, dynamic>> _assets = [];
-  String _username  = '';
+  String  _username  = '';
   String? _avatarUrl;
-  bool _isLoading   = true;
+  bool    _isLoading = true;
+  Timer?  _priceTimer;
 
   String get _userEmail => supabase.auth.currentUser?.email ?? '';
 
@@ -25,6 +28,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadAll();
+    _priceTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _refreshPrices();
+    });
+  }
+
+  @override
+  void dispose() {
+    _priceTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadAll() async {
@@ -63,6 +75,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() => _assets = List<Map<String, dynamic>>.from(data));
       }
+
+      // Refresca precios desde API tras cargar desde BD
+      await _refreshPrices();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -73,6 +88,31 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _refreshPrices() async {
+    if (_assets.isEmpty) return;
+    try {
+      final updated = await Future.wait(
+        _assets.map((asset) async {
+          final live = await MarketService.fetchAsset(
+            asset['symbol'] as String,
+            asset['type']   as String,
+          );
+          if (live != null) {
+            return {
+              ...asset,
+              'price':  live['price'],
+              'change': live['change'],
+            };
+          }
+          return asset;
+        }),
+      );
+      if (mounted) {
+        setState(() => _assets = List<Map<String, dynamic>>.from(updated));
+      }
+    } catch (_) {}
   }
 
   double get _totalValue => _assets.fold(
@@ -115,8 +155,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     end: Alignment.bottomRight,
                   ),
                   borderRadius: BorderRadius.circular(11),
-                  border: Border.all(        // ← reborde azulado
-                    color: const Color.fromARGB(255, 44, 103, 131),
+                  border: Border.all(
+                    color: const Color(0xFF4FC3F7),
                     width: 1.5,
                   ),
                 ),
@@ -157,189 +197,203 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
 
       body: _isLoading
-    ? const Center(child: CircularProgressIndicator())
-    : RefreshIndicator(
-        color: scheme.primary,
-        onRefresh: _loadAll,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-          children: [
-
-            // ── TARJETA TOTAL PORTFOLIO ──────────────────────────────
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF0D47A1), Color(0xFF0288D1)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              color: scheme.primary,
+              onRefresh: _loadAll,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
                 children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.account_balance_wallet_rounded,
-                          color: Colors.white70, size: 30),
-                      const SizedBox(width: 8),
-                      Text('Valor total del portfolio',
-                          style: tt.bodyMedium?.copyWith(
-                              color: Colors.white70, fontSize: 13)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '\$${_totalValue.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 36,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: -1),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      _MiniStat(
-                        label: 'Activos',
-                        value: '${_assets.length}',
-                        icon: Icons.pie_chart_rounded,
-                      ),
-                      const SizedBox(width: 24),
-                      _MiniStat(
-                        label: 'Variación media',
-                        value:
-                            '${_totalChangePercent >= 0 ? '+' : ''}${_totalChangePercent.toStringAsFixed(2)}%',
-                        icon: Icons.trending_up_rounded,
-                        valueColor: _totalChangePercent >= 0
-                            ? const Color(0xFF69F0AE)
-                            : const Color(0xFFFF6B6B),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
 
-            const SizedBox(height: 24),
-
-            // ── DISTRIBUCIÓN ─────────────────────────────────────────
-            Text('Distribución',
-                style: tt.bodyLarge?.copyWith(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                _TypeCard(
-                  label: 'Cripto',
-                  icon: Icons.currency_bitcoin_rounded,
-                  count: _assets.where((a) => a['type'] == 'crypto').length,
-                  color: const Color(0xFFF7931A),
-                ),
-                const SizedBox(width: 12),
-                _TypeCard(
-                  label: 'Acciones',
-                  icon: Icons.show_chart_rounded,
-                  count: _assets.where((a) => a['type'] == 'stock').length,
-                  color: const Color(0xFF4FC3F7),
-                ),
-                const SizedBox(width: 12),
-                _TypeCard(
-                  label: 'ETFs',
-                  icon: Icons.donut_small_rounded,
-                  count: _assets.where((a) => a['type'] == 'etf').length,
-                  color: const Color(0xFF69F0AE),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 28),
-
-            // ── CABECERA LISTA ────────────────────────────────────────
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Tus activos',
-                    style: tt.bodyLarge
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-                GestureDetector(
-                  onTap: () async {
-                    final newAsset =
-                        await Navigator.push<Map<String, dynamic>>(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => const AddAssetScreen()),
-                    );
-                    if (newAsset != null) await _loadAssets();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 6),
+                  // ── TARJETA TOTAL PORTFOLIO ────────────────────────────
+                  Container(
+                    padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1E2D3D),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFF1E3A5F)),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF0D47A1), Color(0xFF0288D1)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.add_rounded,
-                            color: scheme.primary, size: 16),
-                        const SizedBox(width: 4),
-                        Text('Añadir',
-                            style: tt.bodyMedium?.copyWith(
-                              color: scheme.primary,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            )),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.account_balance_wallet_rounded,
+                              color: Colors.white70,
+                              size: 30,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Valor total del portfolio',
+                              style: tt.bodyMedium?.copyWith(
+                                  color: Colors.white70, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '\$${_totalValue.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 36,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: -1,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            _MiniStat(
+                              label: 'Activos',
+                              value: '${_assets.length}',
+                              icon: Icons.pie_chart_rounded,
+                            ),
+                            const SizedBox(width: 24),
+                            _MiniStat(
+                              label: 'Variación media',
+                              value:
+                                  '${_totalChangePercent >= 0 ? '+' : ''}${_totalChangePercent.toStringAsFixed(2)}%',
+                              icon: Icons.trending_up_rounded,
+                              valueColor: _totalChangePercent >= 0
+                                  ? const Color(0xFF69F0AE)
+                                  : const Color(0xFFFF6B6B),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
 
-            // ── LISTA O ESTADO VACÍO ──────────────────────────────────
-            if (_assets.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 40),
-                child: Center(
-                  child: Column(
+                  const SizedBox(height: 24),
+
+                  // ── DISTRIBUCIÓN ───────────────────────────────────────
+                  Text('Distribución',
+                      style: tt.bodyLarge
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 12),
+                  Row(
                     children: [
-                      Icon(Icons.add_circle_outline_rounded,
-                          size: 52, color: const Color(0xFF7BA7C2)),
-                      const SizedBox(height: 12),
-                      Text('Aún no tienes activos',
-                          style: tt.bodyLarge
-                              ?.copyWith(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 6),
-                      Text('Pulsa "Añadir" para empezar',
-                          style: tt.bodyMedium),
+                      _TypeCard(
+                        label: 'Cripto',
+                        icon: Icons.currency_bitcoin_rounded,
+                        count: _assets
+                            .where((a) => a['type'] == 'crypto')
+                            .length,
+                        color: const Color(0xFFF7931A),
+                      ),
+                      const SizedBox(width: 12),
+                      _TypeCard(
+                        label: 'Acciones',
+                        icon: Icons.show_chart_rounded,
+                        count: _assets
+                            .where((a) => a['type'] == 'stock')
+                            .length,
+                        color: const Color(0xFF4FC3F7),
+                      ),
+                      const SizedBox(width: 12),
+                      _TypeCard(
+                        label: 'ETFs',
+                        icon: Icons.donut_small_rounded,
+                        count: _assets
+                            .where((a) => a['type'] == 'etf')
+                            .length,
+                        color: const Color(0xFF69F0AE),
+                      ),
                     ],
                   ),
-                ),
-              )
-            else
-              ..._assets.map((asset) => GestureDetector(
-                    onTap: () async {
-                      final result = await Navigator.push<String>(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              AssetPortfolioDetailScreen(asset: asset),
+
+                  const SizedBox(height: 28),
+
+                  // ── CABECERA LISTA ─────────────────────────────────────
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Tus activos',
+                          style: tt.bodyLarge
+                              ?.copyWith(fontWeight: FontWeight.w600)),
+                      GestureDetector(
+                        onTap: () async {
+                          final newAsset =
+                              await Navigator.push<Map<String, dynamic>>(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const AddAssetScreen()),
+                          );
+                          if (newAsset != null) await _loadAssets();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: cardColor,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: borderColor),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.add_rounded,
+                                  color: scheme.primary, size: 16),
+                              const SizedBox(width: 4),
+                              Text('Añadir',
+                                  style: tt.bodyMedium?.copyWith(
+                                    color: scheme.primary,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  )),
+                            ],
+                          ),
                         ),
-                      );
-                      if (result == 'deleted') await _loadAssets();
-                    },
-                    child: _AssetTile(
-                      asset: asset,
-                      cardColor: const Color(0xFF1E2D3D),
-                      borderColor: const Color(0xFF1E3A5F),
-                    ),
-                  )),
-          ],
-        ),
-      ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // ── LISTA O ESTADO VACÍO ───────────────────────────────
+                  if (_assets.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 40),
+                      child: Center(
+                        child: Column(
+                          children: [
+                            Icon(Icons.add_circle_outline_rounded,
+                                size: 52,
+                                color: const Color(0xFF7BA7C2)),
+                            const SizedBox(height: 12),
+                            Text('Aún no tienes activos',
+                                style: tt.bodyLarge?.copyWith(
+                                    fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 6),
+                            Text('Pulsa "Añadir" para empezar',
+                                style: tt.bodyMedium),
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    ..._assets.map((asset) => GestureDetector(
+                          onTap: () async {
+                            final result = await Navigator.push<String>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    AssetPortfolioDetailScreen(asset: asset),
+                              ),
+                            );
+                            if (result == 'deleted') await _loadAssets();
+                          },
+                          child: _AssetTile(
+                            asset: asset,
+                            cardColor: cardColor,
+                            borderColor: borderColor,
+                          ),
+                        )),
+                ],
+              ),
+            ),
     );
   }
 }
@@ -387,8 +441,8 @@ class _MiniStat extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(label,
-                style:
-                    const TextStyle(color: Colors.white54, fontSize: 11)),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 11)),
             Text(value,
                 style: TextStyle(
                     color: valueColor,
@@ -418,8 +472,7 @@ class _TypeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
         decoration: BoxDecoration(
           color: const Color(0xFF1E2D3D),
           borderRadius: BorderRadius.circular(14),
@@ -474,9 +527,8 @@ class _AssetTile extends StatelessWidget {
     final changeColor = isPositive
         ? const Color(0xFF69F0AE)
         : const Color(0xFFFF6B6B);
-    final typeColor  = _typeColors[asset['type']] ?? const Color(0xFF4FC3F7);
+    final typeColor = _typeColors[asset['type']] ?? const Color(0xFF4FC3F7);
 
-    // Formato inteligente de cantidad
     final String quantityStr = quantity < 0.001
         ? quantity.toStringAsFixed(8)
         : quantity < 1
@@ -493,7 +545,6 @@ class _AssetTile extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Icono
           Container(
             width: 44, height: 44,
             decoration: BoxDecoration(
@@ -510,8 +561,6 @@ class _AssetTile extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 14),
-
-          // Nombre + símbolo + badge
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -554,18 +603,14 @@ class _AssetTile extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                // ── Cantidad ───────────────────────────────────────────
                 Text(
                   '$quantityStr ${asset['symbol'] ?? ''}',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontSize: 11,
-                      color: typeColor.withOpacity(0.8)),
+                      fontSize: 11, color: typeColor.withOpacity(0.8)),
                 ),
               ],
             ),
           ),
-
-          // Valor + variación
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -577,8 +622,10 @@ class _AssetTile extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 '\$${price.toStringAsFixed(2)} / ud.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontSize: 11),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(fontSize: 11),
               ),
               const SizedBox(height: 4),
               Container(

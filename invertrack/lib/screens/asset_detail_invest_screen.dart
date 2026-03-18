@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/market_service.dart';
 
 class AssetDetailInvestScreen extends StatefulWidget {
   final Map<String, dynamic> asset;
@@ -14,7 +15,32 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
   final supabase = Supabase.instance.client;
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
-  bool _isSaving = false;
+  bool _isSaving     = false;
+  bool _loadingPrice = false;
+
+  late Map<String, dynamic> _asset;
+
+  @override
+  void initState() {
+    super.initState();
+    _asset = Map<String, dynamic>.from(widget.asset);
+    _refreshPrice();
+  }
+
+  Future<void> _refreshPrice() async {
+    setState(() => _loadingPrice = true);
+    try {
+      final live = await MarketService.fetchAsset(
+        _asset['symbol'] as String,
+        _asset['type']   as String,
+      );
+      if (live != null && mounted) {
+        setState(() => _asset = {..._asset, ...live});
+      }
+    } finally {
+      if (mounted) setState(() => _loadingPrice = false);
+    }
+  }
 
   static const Map<String, Color> _typeColors = {
     'crypto': Color(0xFFF7931A),
@@ -22,14 +48,14 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
     'etf':    Color(0xFF69F0AE),
   };
 
-  Color get _color => _typeColors[widget.asset['type']] ?? const Color(0xFF4FC3F7);
-  double get _price => (widget.asset['price'] as double);
+  Color  get _color => _typeColors[_asset['type']] ?? const Color(0xFF4FC3F7);
+  double get _price => (_asset['price'] as num?)?.toDouble() ?? 0.0;
 
   double get _amountInvested =>
       double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0;
 
   double get _unitsCalculated =>
-      _amountInvested > 0 ? _amountInvested / _price : 0;
+      _amountInvested > 0 && _price > 0 ? _amountInvested / _price : 0;
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
@@ -41,26 +67,26 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
 
       await supabase.from('assets').insert({
         'user_id':    uid,
-        'name':       widget.asset['name'],
-        'symbol':     widget.asset['symbol'],
-        'type':       widget.asset['type'],
-        'icon':       widget.asset['icon'],
+        'name':       _asset['name'],
+        'symbol':     _asset['symbol'],
+        'type':       _asset['type'],
+        'icon':       _asset['icon'],
         'quantity':   qty,
         'buy_price':  _price,
         'value':      total,
         'price':      _price,
-        'change':     0.0,
+        'change':     (_asset['change'] as num?)?.toDouble() ?? 0.0,
         'created_at': DateTime.now().toIso8601String(),
       });
 
       if (mounted) {
         Navigator.pop(context, {
-          'name':   widget.asset['name'],
-          'symbol': widget.asset['symbol'],
-          'type':   widget.asset['type'],
-          'icon':   widget.asset['icon'],
+          'name':   _asset['name'],
+          'symbol': _asset['symbol'],
+          'type':   _asset['type'],
+          'icon':   _asset['icon'],
           'price':  _price,
-          'change': 0.0,
+          'change': (_asset['change'] as num?)?.toDouble() ?? 0.0,
           'value':  total,
         });
       }
@@ -85,10 +111,13 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
   @override
   Widget build(BuildContext context) {
     final tt   = Theme.of(context).textTheme;
-    final type = widget.asset['type'] as String;
+    final type = _asset['type'] as String;
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
+
+    final change = (_asset['change'] as num?)?.toDouble() ?? 0.0;
+    final isPos  = change >= 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -99,14 +128,36 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
         ),
         title: Row(
           children: [
-            Text(widget.asset['symbol'] as String,
+            Text(_asset['symbol'] as String,
                 style: tt.bodyLarge
                     ?.copyWith(fontWeight: FontWeight.w600, color: _color)),
             const SizedBox(width: 8),
-            Text(widget.asset['name'] as String,
-                style: tt.bodyMedium?.copyWith(fontSize: 13)),
+            Flexible(
+              child: Text(_asset['name'] as String,
+                  style: tt.bodyMedium?.copyWith(fontSize: 13),
+                  overflow: TextOverflow.ellipsis),
+            ),
           ],
         ),
+        actions: [
+          if (_loadingPrice)
+            const Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: Center(
+                child: SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white54),
+                ),
+              ),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded),
+              tooltip: 'Actualizar precio',
+              onPressed: _refreshPrice,
+            ),
+        ],
       ),
 
       body: Form(
@@ -115,7 +166,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
           children: [
 
-            // ── CABECERA PRECIO ──────────────────────────────────────────
+            // ── CABECERA PRECIO ────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -139,7 +190,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                     alignment: Alignment.center,
-                    child: Text(widget.asset['icon'] as String,
+                    child: Text(_asset['icon'] as String,
                         style: TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
@@ -152,22 +203,35 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       children: [
                         Text('Precio actual',
                             style: tt.bodyMedium?.copyWith(fontSize: 12)),
-                        Text(
-                          '\$${_price.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            color: _color,
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: -0.5,
-                          ),
-                        ),
+                        _loadingPrice
+                            ? const SizedBox(
+                                height: 28,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: SizedBox(
+                                    width: 20, height: 20,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white54),
+                                  ),
+                                ),
+                              )
+                            : Text(
+                                _price > 0
+                                    ? '\$${_price.toStringAsFixed(2)}'
+                                    : '—',
+                                style: TextStyle(
+                                  color: _color,
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: -0.5,
+                                ),
+                              ),
                       ],
                     ),
                   ),
-                  Builder(builder: (_) {
-                    final change = widget.asset['change'] as double;
-                    final isPos  = change >= 0;
-                    return Container(
+                  if (!_loadingPrice && _price > 0)
+                    Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
@@ -187,31 +251,30 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                           fontSize: 13,
                         ),
                       ),
-                    );
-                  }),
+                    ),
                 ],
               ),
             ),
 
             const SizedBox(height: 24),
 
-            // ── MÉTRICAS ─────────────────────────────────────────────────
+            // ── MÉTRICAS ───────────────────────────────────────────────
             _SectionLabel(label: 'Métricas clave'),
             const SizedBox(height: 12),
 
             if (type == 'crypto') _CryptoMetrics(
-                asset: widget.asset, color: _color,
+                asset: _asset, color: _color,
                 cardColor: cardColor, borderColor: borderColor),
             if (type == 'stock')  _StockMetrics(
-                asset: widget.asset, color: _color,
+                asset: _asset, color: _color,
                 cardColor: cardColor, borderColor: borderColor),
             if (type == 'etf')    _EtfMetrics(
-                asset: widget.asset, color: _color,
+                asset: _asset, color: _color,
                 cardColor: cardColor, borderColor: borderColor),
 
             const SizedBox(height: 24),
 
-            // ── INVERSIÓN ────────────────────────────────────────────────
+            // ── INVERSIÓN ──────────────────────────────────────────────
             _SectionLabel(label: 'Tu inversión'),
             const SizedBox(height: 12),
 
@@ -253,7 +316,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                     },
                   ),
 
-                  if (_amountInvested > 0) ...[
+                  if (_amountInvested > 0 && _price > 0) ...[
                     const SizedBox(height: 16),
                     Divider(color: borderColor, height: 1),
                     const SizedBox(height: 16),
@@ -274,7 +337,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                                   fontWeight: FontWeight.bold),
                             ),
                             TextSpan(
-                              text: '  ${widget.asset['symbol']}',
+                              text: '  ${_asset['symbol']}',
                               style: tt.bodyMedium?.copyWith(fontSize: 13),
                             ),
                           ]),
@@ -289,7 +352,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                             style: tt.bodyMedium?.copyWith(fontSize: 13)),
                         Text('\$${_price.toStringAsFixed(2)}',
                             style: tt.bodyLarge?.copyWith(
-                                fontSize: 13, fontWeight: FontWeight.w500)),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500)),
                       ],
                     ),
                   ],
@@ -299,11 +363,11 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
 
             const SizedBox(height: 32),
 
-            // ── BOTÓN CONFIRMAR ──────────────────────────────────────────
+            // ── BOTÓN CONFIRMAR ────────────────────────────────────────
             SizedBox(
               height: 52,
               child: ElevatedButton(
-                onPressed: _isSaving ? null : _save,
+                onPressed: (_isSaving || _price == 0) ? null : _save,
                 style: ElevatedButton.styleFrom(
                   backgroundColor:
                       Theme.of(context).colorScheme.secondary,
@@ -314,8 +378,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2.5))
                     : Text(
-                        _amountInvested > 0
-                            ? 'Invertir \$${_amountInvested.toStringAsFixed(2)} en ${widget.asset['symbol']}'
+                        _amountInvested > 0 && _price > 0
+                            ? 'Invertir \$${_amountInvested.toStringAsFixed(2)} en ${_asset['symbol']}'
                             : 'Confirmar inversión',
                         style: const TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600),
@@ -350,8 +414,6 @@ class _CryptoMetrics extends StatelessWidget {
     final hasTvl      = asset.containsKey('tvl');
 
     return Column(children: [
-
-      // Fila 1 — Market Cap + Volumen
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Market Cap', value: asset['market_cap'] ?? '—',
@@ -365,10 +427,7 @@ class _CryptoMetrics extends StatelessWidget {
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Liquidez del mercado en las últimas 24h')),
       ]),
-
       const SizedBox(height: 10),
-
-      // Fila 2 — Oferta circ. + Dir. activas
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Oferta circ.', value: asset['circ_supply'] ?? '—',
@@ -383,11 +442,7 @@ class _CryptoMetrics extends StatelessWidget {
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Adopción real de la red')),
       ]),
-
       const SizedBox(height: 10),
-
-      // Fila 3 — Hash Rate (opcional) + TVL (opcional) + Comunidad
-      // Siempre muestra Comunidad. Si hay Hash Rate o TVL los añade antes.
       if (hasHashRate) ...[
         Row(children: [
           Expanded(child: _MetricCard(
@@ -430,7 +485,7 @@ class _CryptoMetrics extends StatelessWidget {
               tooltip: 'Actividad y transparencia de la comunidad',
               valueColor: _scoreColor(asset['community_score'] ?? 0))),
           const SizedBox(width: 10),
-          Expanded(child: SizedBox()), // placeholder para mantener el grid
+          const Expanded(child: SizedBox()),
         ]),
       ],
     ]);
@@ -458,21 +513,29 @@ class _StockMetrics extends StatelessWidget {
     return const Color(0xFFFF6B6B);
   }
 
+  String _fmt(dynamic v, {String suffix = '', String prefix = ''}) {
+    if (v == null) return '—';
+    return '$prefix$v$suffix';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final pe   = (asset['pe_ratio']     as num?)?.toDouble();
+    final debt = (asset['debt_equity']  as num?)?.toDouble();
+
     return Column(children: [
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'P/E Ratio',
-            value: '${asset['pe_ratio'] ?? '—'}x',
+            value: pe != null ? '${pe.toStringAsFixed(1)}x' : '—',
             icon: Icons.show_chart_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Alto = posible sobrevaloración. Bajo = oportunidad',
-            valueColor: _peColor(
-                (asset['pe_ratio'] as num?)?.toDouble() ?? 0))),
+            valueColor: pe != null ? _peColor(pe) : null)),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'EPS', value: '\$${asset['eps'] ?? '—'}',
+            label: 'EPS',
+            value: _fmt(asset['eps'], prefix: '\$'),
             icon: Icons.trending_up_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Ganancias por acción. Mayor = mejor rendimiento')),
@@ -480,48 +543,50 @@ class _StockMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'ROE', value: '${asset['roe'] ?? '—'}%',
+            label: 'ROE',
+            value: _fmt(asset['roe'], suffix: '%'),
             icon: Icons.percent_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
-            tooltip: 'Retorno sobre el patrimonio. Valores altos = buena gestión',
+            tooltip: 'Retorno sobre el patrimonio',
             valueColor: const Color(0xFF69F0AE))),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
             label: 'Deuda/Capital',
-            value: '${asset['debt_equity'] ?? '—'}',
+            value: debt != null ? debt.toStringAsFixed(2) : '—',
             icon: Icons.account_balance_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Ratio alto = mayor riesgo financiero',
-            valueColor: _debtColor(
-                (asset['debt_equity'] as num?)?.toDouble() ?? 0))),
+            valueColor: debt != null ? _debtColor(debt) : null)),
       ]),
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Div. Yield',
-            value: '${asset['dividend_yield'] ?? 0}%',
+            value: _fmt(asset['dividend_yield'], suffix: '%'),
             icon: Icons.savings_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
-            tooltip: 'Rentabilidad por dividendos sobre el precio actual')),
+            tooltip: 'Rentabilidad por dividendos')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
             label: 'Flujo de caja',
             value: asset['free_cash_flow'] ?? '—',
             icon: Icons.water_drop_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
-            tooltip: 'Dinero disponible tras gastos. Positivo y creciente = salud',
+            tooltip: 'Dinero disponible tras gastos',
             valueColor: const Color(0xFF69F0AE))),
       ]),
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Market Cap', value: asset['market_cap'] ?? '—',
+            label: 'Market Cap',
+            value: asset['market_cap'] ?? '—',
             icon: Icons.corporate_fare_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Capitalización bursátil total')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Sector', value: asset['sector'] ?? '—',
+            label: 'Sector',
+            value: asset['sector'] ?? '—',
             icon: Icons.category_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Sector de actividad de la empresa')),
@@ -547,20 +612,23 @@ class _EtfMetrics extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final expense = (asset['expense_ratio'] as num?)?.toDouble();
+
     return Column(children: [
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Expense Ratio',
-            value: '${asset['expense_ratio'] ?? '—'}%',
+            value: expense != null ? '${expense.toStringAsFixed(2)}%' : '—',
             icon: Icons.receipt_long_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Comisión anual de administración. Menor = mejor',
-            valueColor: _expenseColor(
-                (asset['expense_ratio'] as num?)?.toDouble() ?? 0))),
+            valueColor: expense != null ? _expenseColor(expense) : null)),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
             label: 'Tracking Error',
-            value: '${asset['tracking_error'] ?? '—'}%',
+            value: asset['tracking_error'] != null
+                ? '${asset['tracking_error']}%'
+                : '—',
             icon: Icons.track_changes_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Desviación respecto al índice. Menor = más fiel')),
@@ -568,13 +636,15 @@ class _EtfMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Índice', value: asset['index'] ?? '—',
+            label: 'Índice',
+            value: asset['index'] ?? '—',
             icon: Icons.list_alt_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Índice subyacente que replica el ETF')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Estructura', value: asset['structure'] ?? '—',
+            label: 'Estructura',
+            value: asset['structure'] ?? '—',
             icon: Icons.account_tree_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Réplica total = compra física de activos del índice')),
@@ -582,7 +652,8 @@ class _EtfMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'AUM', value: '\$${asset['aum'] ?? '—'}',
+            label: 'AUM',
+            value: asset['aum'] != null ? '\$${asset['aum']}' : '—',
             icon: Icons.account_balance_wallet_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Activos bajo gestión. Mayor = más liquidez')),
