@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:invertrack/screens/add_asset_screen.dart';
+import 'package:invertrack/screens/asset_portfolio_detail_screen.dart';
 import 'package:invertrack/screens/profile_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:invertrack/screens/add_asset_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,66 +14,23 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final supabase = Supabase.instance.client;
 
-  // ── Datos de ejemplo (reemplaza con tus llamadas a Supabase / API de precios) ──
-  final List<Map<String, dynamic>> _assets = [
-    {
-      'name': 'Bitcoin',
-      'symbol': 'BTC',
-      'type': 'crypto',
-      'price': 67432.50,
-      'change': 3.24,
-      'value': 13486.50,
-      'icon': '₿',
-    },
-    {
-      'name': 'Ethereum',
-      'symbol': 'ETH',
-      'type': 'crypto',
-      'price': 3512.80,
-      'change': -1.47,
-      'value': 7025.60,
-      'icon': 'Ξ',
-    },
-    {
-      'name': 'Apple Inc.',
-      'symbol': 'AAPL',
-      'type': 'stock',
-      'price': 189.30,
-      'change': 0.85,
-      'value': 3786.00,
-      'icon': 'A',
-    },
-    {
-      'name': 'Tesla',
-      'symbol': 'TSLA',
-      'type': 'stock',
-      'price': 242.10,
-      'change': -2.13,
-      'value': 2421.00,
-      'icon': 'T',
-    },
-    {
-      'name': 'S&P 500 ETF',
-      'symbol': 'SPY',
-      'type': 'etf',
-      'price': 521.40,
-      'change': 0.44,
-      'value': 5214.00,
-      'icon': 'S',
-    },
-  ];
-
-  String get _userEmail => 
-    supabase.auth.currentUser?.email ?? '';
-
-  String _username = '';
+  List<Map<String, dynamic>> _assets = [];
+  String _username  = '';
   String? _avatarUrl;
+  bool _isLoading   = true;
+
+  String get _userEmail => supabase.auth.currentUser?.email ?? '';
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _loadAll();
   }
+
+  Future<void> _loadAll() async {
+    await Future.wait([_loadProfile(), _loadAssets()]);
+  }
+
   Future<void> _loadProfile() async {
     try {
       final uid  = supabase.auth.currentUser!.id;
@@ -81,7 +39,6 @@ class _HomeScreenState extends State<HomeScreen> {
           .select()
           .eq('id', uid)
           .maybeSingle();
-
       if (mounted) {
         setState(() {
           _username  = data?['username'] ?? _userEmail.split('@').first;
@@ -93,20 +50,45 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  double get _totalValue =>
-      _assets.fold(0, (sum, a) => sum + (a['value'] as double));
+  Future<void> _loadAssets() async {
+    setState(() => _isLoading = true);
+    try {
+      final uid  = supabase.auth.currentUser!.id;
+      final data = await supabase
+          .from('assets')
+          .select()
+          .eq('user_id', uid)
+          .order('created_at', ascending: false);
 
-  double get _totalChangePercent {
-    final gains = _assets.where((a) => (a['change'] as double) > 0);
-    final avg = gains.fold(0.0, (s, a) => s + (a['change'] as double));
-    return avg / _assets.length;
+      if (mounted) {
+        setState(() => _assets = List<Map<String, dynamic>>.from(data));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error al cargar activos: $e'),
+          backgroundColor: const Color(0xFFFF6B6B),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
+  double get _totalValue => _assets.fold(
+      0, (sum, a) => sum + ((a['value'] as num?)?.toDouble() ?? 0));
+
+  double get _totalChangePercent {
+    if (_assets.isEmpty) return 0;
+    final total = _assets.fold(
+        0.0, (s, a) => s + ((a['change'] as num?)?.toDouble() ?? 0));
+    return total / _assets.length;
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
+    final tt     = Theme.of(context).textTheme;
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
@@ -116,18 +98,16 @@ class _HomeScreenState extends State<HomeScreen> {
         titleSpacing: 16,
         title: Row(
           children: [
-            // Avatar
             GestureDetector(
               onTap: () async {
                 await Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const ProfileScreen()),
                 );
-                _loadProfile(); // refresca al volver del perfil
+                _loadAll();
               },
               child: Container(
-                width: 36,
-                height: 36,
+                width: 36, height: 36,
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
                     colors: [Color(0xFF0D47A1), Color(0xFF0288D1)],
@@ -135,21 +115,25 @@ class _HomeScreenState extends State<HomeScreen> {
                     end: Alignment.bottomRight,
                   ),
                   borderRadius: BorderRadius.circular(11),
+                  border: Border.all(        // ← reborde azulado
+                    color: const Color.fromARGB(255, 44, 103, 131),
+                    width: 1.5,
+                  ),
                 ),
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(11),
+                  borderRadius: BorderRadius.circular(9.5),
                   child: _avatarUrl != null
                       ? Image.network(
                           _avatarUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _AvatarInitial(name: _username),
+                          errorBuilder: (_, __, ___) =>
+                              _AvatarInitial(name: _username),
                         )
                       : _AvatarInitial(name: _username),
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            // Nombre
             Text(
               _username.isEmpty ? '' : _username,
               style: tt.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
@@ -165,25 +149,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 context,
                 MaterialPageRoute(builder: (_) => const ProfileScreen()),
               );
-              _loadProfile(); // refresca al volver del perfil
+              _loadAll();
             },
           ),
           const SizedBox(width: 8),
         ],
       ),
 
-      body: RefreshIndicator(
+      body: _isLoading
+    ? const Center(child: CircularProgressIndicator())
+    : RefreshIndicator(
         color: scheme.primary,
-        onRefresh: () async {
-          // Aquí irá tu llamada para refrescar precios
-          await Future.delayed(const Duration(seconds: 1));
-          setState(() {});
-        },
+        onRefresh: _loadAll,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
           children: [
 
-            // ── TARJETA TOTAL PORTFOLIO ──────────────────────────────────
+            // ── TARJETA TOTAL PORTFOLIO ──────────────────────────────
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
@@ -199,33 +181,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
-                        Icons.account_balance_wallet_rounded,
-                        color: Colors.white70,
-                        size: 30,
-                      ),
+                      const Icon(Icons.account_balance_wallet_rounded,
+                          color: Colors.white70, size: 30),
                       const SizedBox(width: 8),
-                      Text(
-                        'Valor total del portfolio',
-                        style: tt.bodyMedium?.copyWith(
-                          color: Colors.white70,
-                          fontSize: 13,
-                        ),
-                      ),
+                      Text('Valor total del portfolio',
+                          style: tt.bodyMedium?.copyWith(
+                              color: Colors.white70, fontSize: 13)),
                     ],
                   ),
                   const SizedBox(height: 12),
                   Text(
                     '\$${_totalValue.toStringAsFixed(2)}',
                     style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 36,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: -1,
-                    ),
+                        color: Colors.white,
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: -1),
                   ),
                   const SizedBox(height: 16),
-                  // Mini stats row
                   Row(
                     children: [
                       _MiniStat(
@@ -251,38 +224,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 24),
 
-            // ── RESUMEN POR TIPO ─────────────────────────────────────────
-            Text(
-              'Distribución',
-              style: tt.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-            ),
+            // ── DISTRIBUCIÓN ─────────────────────────────────────────
+            Text('Distribución',
+                style: tt.bodyLarge?.copyWith(fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
             Row(
               children: [
                 _TypeCard(
                   label: 'Cripto',
                   icon: Icons.currency_bitcoin_rounded,
-                  count: _assets
-                      .where((a) => a['type'] == 'crypto')
-                      .length,
+                  count: _assets.where((a) => a['type'] == 'crypto').length,
                   color: const Color(0xFFF7931A),
                 ),
                 const SizedBox(width: 12),
                 _TypeCard(
                   label: 'Acciones',
                   icon: Icons.show_chart_rounded,
-                  count: _assets
-                      .where((a) => a['type'] == 'stock')
-                      .length,
+                  count: _assets.where((a) => a['type'] == 'stock').length,
                   color: const Color(0xFF4FC3F7),
                 ),
                 const SizedBox(width: 12),
                 _TypeCard(
                   label: 'ETFs',
                   icon: Icons.donut_small_rounded,
-                  count: _assets
-                      .where((a) => a['type'] == 'etf')
-                      .length,
+                  count: _assets.where((a) => a['type'] == 'etf').length,
                   color: const Color(0xFF69F0AE),
                 ),
               ],
@@ -290,26 +255,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 28),
 
-            // ── LISTA DE ACTIVOS ─────────────────────────────────────────
+            // ── CABECERA LISTA ────────────────────────────────────────
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'Tus activos',
-                  style: tt.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-                ),
+                Text('Tus activos',
+                    style: tt.bodyLarge
+                        ?.copyWith(fontWeight: FontWeight.w600)),
                 GestureDetector(
                   onTap: () async {
-                    final newAsset = await Navigator.push<Map<String, dynamic>>(
+                    final newAsset =
+                        await Navigator.push<Map<String, dynamic>>(
                       context,
-                      MaterialPageRoute(builder: (_) => const AddAssetScreen()),
+                      MaterialPageRoute(
+                          builder: (_) => const AddAssetScreen()),
                     );
-                    if (newAsset != null) {
-                      setState(() => _assets.add(newAsset));
-                    }
+                    if (newAsset != null) await _loadAssets();
                   },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
                       color: const Color(0xFF1E2D3D),
                       borderRadius: BorderRadius.circular(10),
@@ -320,14 +285,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icon(Icons.add_rounded,
                             color: scheme.primary, size: 16),
                         const SizedBox(width: 4),
-                        Text(
-                          'Añadir',
-                          style: tt.bodyMedium?.copyWith(
-                            color: scheme.primary,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                        Text('Añadir',
+                            style: tt.bodyMedium?.copyWith(
+                              color: scheme.primary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            )),
                       ],
                     ),
                   ),
@@ -336,11 +299,44 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 12),
 
-            ..._assets.map((asset) => _AssetTile(
-                  asset: asset,
-                  cardColor: cardColor,
-                  borderColor: borderColor,
-                )),
+            // ── LISTA O ESTADO VACÍO ──────────────────────────────────
+            if (_assets.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Icon(Icons.add_circle_outline_rounded,
+                          size: 52, color: const Color(0xFF7BA7C2)),
+                      const SizedBox(height: 12),
+                      Text('Aún no tienes activos',
+                          style: tt.bodyLarge
+                              ?.copyWith(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 6),
+                      Text('Pulsa "Añadir" para empezar',
+                          style: tt.bodyMedium),
+                    ],
+                  ),
+                ),
+              )
+            else
+              ..._assets.map((asset) => GestureDetector(
+                    onTap: () async {
+                      final result = await Navigator.push<String>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              AssetPortfolioDetailScreen(asset: asset),
+                        ),
+                      );
+                      if (result == 'deleted') await _loadAssets();
+                    },
+                    child: _AssetTile(
+                      asset: asset,
+                      cardColor: const Color(0xFF1E2D3D),
+                      borderColor: const Color(0xFF1E3A5F),
+                    ),
+                  )),
           ],
         ),
       ),
@@ -349,6 +345,24 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ── WIDGETS AUXILIARES ────────────────────────────────────────────────────────
+
+class _AvatarInitial extends StatelessWidget {
+  const _AvatarInitial({required this.name});
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(
+        name.isNotEmpty ? name[0].toUpperCase() : '?',
+        style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+}
 
 class _MiniStat extends StatelessWidget {
   const _MiniStat({
@@ -372,18 +386,14 @@ class _MiniStat extends StatelessWidget {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              label,
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
-            ),
-            Text(
-              value,
-              style: TextStyle(
-                color: valueColor,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            Text(label,
+                style:
+                    const TextStyle(color: Colors.white54, fontSize: 11)),
+            Text(value,
+                style: TextStyle(
+                    color: valueColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
           ],
         ),
       ],
@@ -408,7 +418,8 @@ class _TypeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        padding:
+            const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
         decoration: BoxDecoration(
           color: const Color(0xFF1E2D3D),
           borderRadius: BorderRadius.circular(14),
@@ -418,22 +429,17 @@ class _TypeCard extends StatelessWidget {
           children: [
             Icon(icon, color: color, size: 22),
             const SizedBox(height: 6),
-            Text(
-              '$count',
-              style: TextStyle(
-                color: color,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text('$count',
+                style: TextStyle(
+                    color: color,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold)),
             const SizedBox(height: 2),
-            Text(
-              label,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(fontSize: 11),
-            ),
+            Text(label,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(fontSize: 11)),
           ],
         ),
       ),
@@ -452,11 +458,30 @@ class _AssetTile extends StatelessWidget {
   final Color cardColor;
   final Color borderColor;
 
+  static const Map<String, Color> _typeColors = {
+    'crypto': Color(0xFFF7931A),
+    'stock':  Color(0xFF4FC3F7),
+    'etf':    Color(0xFF69F0AE),
+  };
+
   @override
   Widget build(BuildContext context) {
-    final isPositive = (asset['change'] as double) >= 0;
-    final changeColor =
-        isPositive ? const Color(0xFF69F0AE) : const Color(0xFFFF6B6B);
+    final price      = (asset['price']    as num?)?.toDouble() ?? 0.0;
+    final change     = (asset['change']   as num?)?.toDouble() ?? 0.0;
+    final value      = (asset['value']    as num?)?.toDouble() ?? 0.0;
+    final quantity   = (asset['quantity'] as num?)?.toDouble() ?? 0.0;
+    final isPositive = change >= 0;
+    final changeColor = isPositive
+        ? const Color(0xFF69F0AE)
+        : const Color(0xFFFF6B6B);
+    final typeColor  = _typeColors[asset['type']] ?? const Color(0xFF4FC3F7);
+
+    // Formato inteligente de cantidad
+    final String quantityStr = quantity < 0.001
+        ? quantity.toStringAsFixed(8)
+        : quantity < 1
+            ? quantity.toStringAsFixed(6)
+            : quantity.toStringAsFixed(4);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -464,104 +489,116 @@ class _AssetTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: cardColor,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: borderColor),
+        border: Border.all(color: typeColor.withOpacity(0.35)),
       ),
       child: Row(
         children: [
-          // Icono / símbolo
+          // Icono
           Container(
-            width: 44,
-            height: 44,
+            width: 44, height: 44,
             decoration: BoxDecoration(
-              color: const Color(0xFF0A0E1A),
+              color: typeColor.withOpacity(0.1),
               borderRadius: BorderRadius.circular(12),
             ),
             alignment: Alignment.center,
             child: Text(
-              asset['icon'] as String,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF4FC3F7),
-              ),
+              asset['icon'] as String? ?? '?',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: typeColor),
             ),
           ),
           const SizedBox(width: 14),
 
-          // Nombre + símbolo
+          // Nombre + símbolo + badge
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  asset['name'] as String,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyLarge
-                      ?.copyWith(fontWeight: FontWeight.w600, fontSize: 14),
+                  asset['name'] as String? ?? '',
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600, fontSize: 14),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
+                Row(
+                  children: [
+                    Text(
+                      asset['symbol'] as String? ?? '',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontSize: 12),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: typeColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        asset['type'] == 'crypto'
+                            ? 'Cripto'
+                            : asset['type'] == 'stock'
+                                ? 'Acción'
+                                : 'ETF',
+                        style: TextStyle(
+                            color: typeColor,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                // ── Cantidad ───────────────────────────────────────────
                 Text(
-                  asset['symbol'] as String,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(fontSize: 12),
+                  '$quantityStr ${asset['symbol'] ?? ''}',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontSize: 11,
+                      color: typeColor.withOpacity(0.8)),
                 ),
               ],
             ),
           ),
 
-          // Precio + variación
+          // Valor + variación
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                '\$${(asset['price'] as double).toStringAsFixed(2)}',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyLarge
-                    ?.copyWith(fontWeight: FontWeight.w600, fontSize: 14),
+                '\$${value.toStringAsFixed(2)}',
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600, fontSize: 14),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '\$${price.toStringAsFixed(2)} / ud.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontSize: 11),
               ),
               const SizedBox(height: 4),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: changeColor.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  '${isPositive ? '+' : ''}${(asset['change'] as double).toStringAsFixed(2)}%',
+                  '${isPositive ? '+' : ''}${change.toStringAsFixed(2)}%',
                   style: TextStyle(
-                    color: changeColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
+                      color: changeColor,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
                 ),
               ),
             ],
           ),
         ],
-      ),
-    );
-    
-  }
-}
-class _AvatarInitial extends StatelessWidget {
-  const _AvatarInitial({required this.name});
-  final String name;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        name.isNotEmpty ? name[0].toUpperCase() : '?',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
       ),
     );
   }

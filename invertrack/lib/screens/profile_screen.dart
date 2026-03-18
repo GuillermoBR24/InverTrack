@@ -82,14 +82,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final confirmed = await _showConfirmDialog(
       title: 'Eliminar cuenta',
       message:
-          'Esta acción es irreversible. Se borrarán todos tus datos y no podrás recuperarlos.',
+          'Esta acción es irreversible. Se borrarán todos tus datos, activos y foto de perfil.',
       confirmLabel: 'Eliminar',
       confirmColor: const Color(0xFFFF6B6B),
     );
     if (!confirmed) return;
 
+    final emailConfirmed = await _showEmailConfirmDialog();
+    if (!emailConfirmed) return;
+
+    setState(() => _isSaving = true);
+
     try {
+      final uid = supabase.auth.currentUser!.id;
+
+      // Borrar avatar del Storage
+      final extensions = ['jpg', 'jpeg', 'png', 'webp'];
+      await Future.wait(
+        extensions.map((ext) => supabase.storage
+            .from('avatars')
+            .remove(['$uid/avatar.$ext'])
+            .catchError((_) => <FileObject>[])),
+      );
+
+      // Llamar a la función SQL que borra todo incluido auth.users
+      await supabase.rpc('delete_user_account');
+
+      // Limpiar sesión local
       await supabase.auth.signOut();
+
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
@@ -99,7 +120,79 @@ class _ProfileScreenState extends State<ProfileScreen> {
       }
     } catch (e) {
       _showSnack('Error al eliminar la cuenta: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
+  }
+
+  Future<bool> _showEmailConfirmDialog() async {
+    final controller = TextEditingController();
+    final formKey    = GlobalKey<FormState>();
+
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF111827),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            title: Text(
+              'Confirma tu correo',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            content: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Escribe tu correo electrónico para confirmar que quieres eliminar tu cuenta.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: controller,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'Correo electrónico',
+                      prefixIcon: Icon(Icons.email_outlined),
+                    ),
+                    validator: (v) {
+                      if (v == null || v.isEmpty) return 'Ingresa tu correo';
+                      if (v.trim() != _userEmail) {
+                        return 'El correo no coincide';
+                      }
+                      return null;
+                    },
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar'),
+              ),
+              TextButton(
+                onPressed: () {
+                  if (formKey.currentState!.validate()) {
+                    Navigator.pop(ctx, true);
+                  }
+                },
+                child: const Text(
+                  'Confirmar eliminación',
+                  style: TextStyle(
+                      color: Color(0xFFFF6B6B),
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   // ── EDITAR CAMPO (bottom sheet) ──────────────────────────────────────────────
@@ -708,6 +801,7 @@ class _SettingsTile extends StatelessWidget {
       ),
     );
   }
+  
 }
 
 class _Divider extends StatelessWidget {
@@ -719,3 +813,4 @@ class _Divider extends StatelessWidget {
     return Divider(height: 1, color: color, indent: 56, endIndent: 16);
   }
 }
+
