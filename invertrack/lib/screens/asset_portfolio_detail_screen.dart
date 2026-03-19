@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:invertrack/screens/sell_asset_screen.dart';
+import 'package:provider/provider.dart';
+import 'package:invertrack/providers/currency_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/market_service.dart';
-import 'login_screen.dart';
 
 class AssetPortfolioDetailScreen extends StatefulWidget {
   final Map<String, dynamic> asset;
@@ -15,7 +16,7 @@ class AssetPortfolioDetailScreen extends StatefulWidget {
 
 class _AssetPortfolioDetailScreenState
     extends State<AssetPortfolioDetailScreen> {
-  final supabase = Supabase.instance.client;
+  final supabase  = Supabase.instance.client;
   bool _isDeleting    = false;
   bool _isLoadingData = true;
 
@@ -52,7 +53,6 @@ class _AssetPortfolioDetailScreenState
       final symbol = _liveAsset['symbol'] as String;
       final type   = _liveAsset['type']   as String;
 
-      // Cargar datos en tiempo real + logo en paralelo
       final futures = await Future.wait([
         MarketService.fetchAsset(symbol, type),
         if (type == 'crypto')
@@ -61,9 +61,7 @@ class _AssetPortfolioDetailScreenState
           Future.value(null),
       ]);
 
-      final live  = futures[0] as Map<String, dynamic>?;
-      // thumb ya se setea en _loadCryptoThumb via setState
-
+      final live = futures[0] as Map<String, dynamic>?;
       if (live != null && mounted) {
         setState(() => _liveAsset = {..._liveAsset, ...live});
       }
@@ -75,10 +73,6 @@ class _AssetPortfolioDetailScreenState
 
   Future<void> _loadCryptoThumb(String symbol) async {
     try {
-      final id = MarketService.getCoinGeckoId(symbol);
-      if (id == null) return;
-      final res = await MarketService.fetchCryptoById(id, symbol);
-      // El thumb viene del top10, intentamos obtenerlo del search
       final searchResults = await MarketService.searchCrypto(symbol);
       if (searchResults.isNotEmpty && mounted) {
         setState(() => _thumbUrl = searchResults.first['thumb'] as String?);
@@ -137,7 +131,9 @@ class _AssetPortfolioDetailScreenState
 
   @override
   Widget build(BuildContext context) {
-    final tt        = Theme.of(context).textTheme;
+    final tt  = Theme.of(context).textTheme;
+    final cp  = context.watch<CurrencyProvider>();
+
     final isPos     = _change >= 0;
     final gainIsPos = _gainLoss >= 0;
     final changeColor = isPos
@@ -202,10 +198,7 @@ class _AssetPortfolioDetailScreenState
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  _color.withOpacity(0.25),
-                  _color.withOpacity(0.05)
-                ],
+                colors: [_color.withOpacity(0.25), _color.withOpacity(0.05)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -214,7 +207,6 @@ class _AssetPortfolioDetailScreenState
             ),
             child: Row(
               children: [
-                // Logo real o inicial
                 Container(
                   width: 56, height: 56,
                   decoration: BoxDecoration(
@@ -267,7 +259,7 @@ class _AssetPortfolioDetailScreenState
                               ),
                             )
                           : Text(
-                              '\$${_price.toStringAsFixed(2)}',
+                              cp.format(_price),
                               style: TextStyle(
                                 color: _color,
                                 fontSize: 26,
@@ -323,12 +315,10 @@ class _AssetPortfolioDetailScreenState
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                          gainIsPos
-                              ? 'Ganancia actual'
-                              : 'Pérdida actual',
+                          gainIsPos ? 'Ganancia actual' : 'Pérdida actual',
                           style: tt.bodyMedium?.copyWith(fontSize: 12)),
                       Text(
-                        '${gainIsPos ? '+' : ''}\$${_gainLoss.toStringAsFixed(2)}',
+                        '${gainIsPos ? '+' : ''}${cp.format(_gainLoss)}',
                         style: TextStyle(
                           color: gainColor,
                           fontSize: 22,
@@ -369,14 +359,14 @@ class _AssetPortfolioDetailScreenState
               _InfoRow(
                 icon: Icons.attach_money_rounded,
                 label: 'Valor invertido',
-                value: '\$${_value.toStringAsFixed(2)}',
+                value: cp.format(_value),
                 color: _color,
               ),
               _Divider(color: borderColor),
               _InfoRow(
                 icon: Icons.price_change_rounded,
                 label: 'Precio de compra',
-                value: '\$${_buyPrice.toStringAsFixed(2)}',
+                value: cp.format(_buyPrice),
                 color: _color,
               ),
               _Divider(color: borderColor),
@@ -393,7 +383,7 @@ class _AssetPortfolioDetailScreenState
               _InfoRow(
                 icon: Icons.account_balance_wallet_rounded,
                 label: 'Valor actual',
-                value: '\$${_currentValue.toStringAsFixed(2)}',
+                value: cp.format(_currentValue),
                 color: _color,
               ),
             ],
@@ -441,10 +431,9 @@ class _AssetPortfolioDetailScreenState
 
           const SizedBox(height: 32),
 
-          // ── BOTÓN ELIMINAR ───────────────────────────────────────────
+          // ── BOTONES VENDER / ELIMINAR ────────────────────────────────
           Row(
             children: [
-              // Botón vender
               Expanded(
                 child: SizedBox(
                   height: 52,
@@ -477,7 +466,6 @@ class _AssetPortfolioDetailScreenState
                 ),
               ),
               const SizedBox(width: 12),
-              // Botón eliminar (más pequeño, solo icono)
               SizedBox(
                 height: 52,
                 child: OutlinedButton(
@@ -496,7 +484,8 @@ class _AssetPortfolioDetailScreenState
                           child: CircularProgressIndicator(
                               strokeWidth: 2,
                               color: Color(0xFFFF6B6B)))
-                      : const Icon(Icons.delete_outline_rounded, size: 20),
+                      : const Icon(
+                          Icons.delete_outline_rounded, size: 20),
                 ),
               ),
             ],
@@ -525,24 +514,20 @@ class _CryptoMetrics extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasHashRate = asset.containsKey('hash_rate') &&
-        asset['hash_rate'] != null &&
-        asset['hash_rate'] != '—';
+        asset['hash_rate'] != null && asset['hash_rate'] != '—';
     final hasTvl = asset.containsKey('tvl') &&
-        asset['tvl'] != null &&
-        asset['tvl'] != '—';
+        asset['tvl'] != null && asset['tvl'] != '—';
 
     return Column(children: [
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Market Cap',
-            value: asset['market_cap'] ?? '—',
+            label: 'Market Cap', value: asset['market_cap'] ?? '—',
             icon: Icons.pie_chart_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Capitalización total. Mayor = más estable')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Volumen 24h',
-            value: asset['volume_24h'] ?? '—',
+            label: 'Volumen 24h', value: asset['volume_24h'] ?? '—',
             icon: Icons.bar_chart_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Liquidez del mercado en las últimas 24h')),
@@ -550,16 +535,14 @@ class _CryptoMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Oferta circ.',
-            value: asset['circ_supply'] ?? '—',
+            label: 'Oferta circ.', value: asset['circ_supply'] ?? '—',
             icon: Icons.rotate_right_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Tokens en circulación vs oferta máxima',
             subtitle: 'Máx: ${asset['max_supply'] ?? '∞'}')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Dir. activas',
-            value: asset['active_addresses'] ?? '—',
+            label: 'Dir. activas', value: asset['active_addresses'] ?? '—',
             icon: Icons.people_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Adopción real de la red')),
@@ -568,8 +551,7 @@ class _CryptoMetrics extends StatelessWidget {
       if (hasHashRate) ...[
         Row(children: [
           Expanded(child: _MetricCard(
-              label: 'Hash Rate',
-              value: asset['hash_rate'] ?? '—',
+              label: 'Hash Rate', value: asset['hash_rate'] ?? '—',
               icon: Icons.memory_rounded, color: color,
               cardColor: cardColor, borderColor: borderColor,
               tooltip: 'Potencia computacional de la red (PoW)')),
@@ -586,8 +568,7 @@ class _CryptoMetrics extends StatelessWidget {
       ] else if (hasTvl) ...[
         Row(children: [
           Expanded(child: _MetricCard(
-              label: 'TVL',
-              value: '\$${asset['tvl'] ?? '—'}',
+              label: 'TVL', value: '\$${asset['tvl'] ?? '—'}',
               icon: Icons.lock_rounded, color: color,
               cardColor: cardColor, borderColor: borderColor,
               tooltip: 'Total Value Locked en protocolos DeFi')),
@@ -743,9 +724,7 @@ class _EtfMetrics extends StatelessWidget {
       Row(children: [
         Expanded(child: _MetricCard(
             label: 'Expense Ratio',
-            value: expense != null
-                ? '${expense.toStringAsFixed(2)}%'
-                : '—',
+            value: expense != null ? '${expense.toStringAsFixed(2)}%' : '—',
             icon: Icons.receipt_long_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Comisión anual de administración. Menor = mejor',
@@ -754,8 +733,7 @@ class _EtfMetrics extends StatelessWidget {
         Expanded(child: _MetricCard(
             label: 'Tracking Error',
             value: asset['tracking_error'] != null
-                ? '${asset['tracking_error']}%'
-                : '—',
+                ? '${asset['tracking_error']}%' : '—',
             icon: Icons.track_changes_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Desviación respecto al índice. Menor = más fiel')),
@@ -763,15 +741,13 @@ class _EtfMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Índice',
-            value: asset['index'] ?? '—',
+            label: 'Índice', value: asset['index'] ?? '—',
             icon: Icons.list_alt_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Índice subyacente que replica el ETF')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Estructura',
-            value: asset['structure'] ?? '—',
+            label: 'Estructura', value: asset['structure'] ?? '—',
             icon: Icons.account_tree_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Réplica total = compra física de activos del índice')),

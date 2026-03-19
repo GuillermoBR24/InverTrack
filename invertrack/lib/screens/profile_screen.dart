@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:invertrack/providers/currency_provider.dart';
+import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_screen.dart';
 
@@ -620,13 +622,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                 const SizedBox(height: 24),
 
-                // ── SECCIÓN: PREFERENCIAS ──────────────────────────────────
+                // ── SECCIÓN: PREFERENCIAS ──────────────────────────────────────
                 _SectionLabel(label: 'Preferencias'),
                 const SizedBox(height: 10),
                 _SettingsCard(
                   cardColor: cardColor,
                   borderColor: borderColor,
                   children: [
+                    // Notificaciones
                     Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 4),
@@ -653,6 +656,105 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 setState(() => _notificationsEnabled = v),
                           ),
                         ],
+                      ),
+                    ),
+
+                    _Divider(color: borderColor),
+
+                    // ── SELECTOR DE MONEDA ──────────────────────────────
+                    Consumer<CurrencyProvider>(
+                      builder: (context, cp, _) => Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: scheme.primary.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(Icons.currency_exchange_rounded,
+                                  color: scheme.primary, size: 18),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Moneda',
+                                      style: tt.bodyMedium
+                                          ?.copyWith(fontSize: 12)),
+                                  Text(
+                                    cp.currency == 'USD'
+                                        ? 'Dólar estadounidense'
+                                        : 'Euro',
+                                    style: tt.bodyLarge
+                                        ?.copyWith(fontSize: 14,
+                                            fontWeight: FontWeight.w500),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            // Toggle USD / EUR
+                            Container(
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0A0E1A),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                    color: const Color(0xFF1E3A5F)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: ['USD', 'EUR'].map((c) {
+                                  final isSelected = cp.currency == c;
+                                  return GestureDetector(
+                                    onTap: cp.loading
+                                        ? null
+                                        : () => cp.setCurrency(c),
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 200),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 14, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: isSelected
+                                            ? scheme.primary.withOpacity(0.2)
+                                            : Colors.transparent,
+                                        borderRadius:
+                                            BorderRadius.circular(9),
+                                        border: isSelected
+                                            ? Border.all(
+                                                color: scheme.primary,
+                                                width: 1.5)
+                                            : null,
+                                      ),
+                                      child: cp.loading && isSelected
+                                          ? SizedBox(
+                                              width: 14, height: 14,
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 1.5,
+                                                  color: scheme.primary))
+                                          : Text(
+                                              c,
+                                              style: TextStyle(
+                                                color: isSelected
+                                                    ? scheme.primary
+                                                    : const Color(
+                                                        0xFF7BA7C2),
+                                                fontSize: 13,
+                                                fontWeight: isSelected
+                                                    ? FontWeight.w600
+                                                    : FontWeight.normal,
+                                              ),
+                                            ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],

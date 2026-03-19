@@ -591,4 +591,26 @@ class MarketService {
 
     return null;
   }
+
+  static Future<double?> fetchExchangeRate(String toCurrency) async {
+    try {
+      // Usamos CoinGecko para obtener el tipo de cambio
+      // ya que tenemos la key y evitamos APIs externas
+      final res = await http.get(
+        Uri.parse(
+          '$_coinGeckoBase/simple/price'
+          '?ids=tether&vs_currencies=${toCurrency.toLowerCase()}',
+        ),
+        headers: {'x-cg-demo-api-key': _coinGeckoKey},
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body);
+      final rate = (data['tether']?[toCurrency.toLowerCase()] as num?)
+          ?.toDouble();
+      return rate;
+    } catch (_) {
+      return null;
+    }
+  }
 }

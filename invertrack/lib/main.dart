@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:invertrack/providers/currency_provider.dart';
+import 'package:invertrack/screens/home_screen.dart';
+import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/login_screen.dart';
 
@@ -10,7 +13,12 @@ void main() async {
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhybm9tcXF0dmR1cGluenN0bWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2MjgyNDMsImV4cCI6MjA4ODIwNDI0M30.tr5yTWo0HW0yzRKe80qDIHozydLtrOAfu5EQWZd0Mzw',
   );
 
-  runApp(const MyApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => CurrencyProvider(),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -24,7 +32,7 @@ class MyApp extends StatelessWidget {
       theme: _buildDarkBlueTheme(),
       darkTheme: _buildDarkBlueTheme(),
       themeMode: ThemeMode.dark,
-      home: const LoginScreen(),
+      home: const _AppLoader(),
     );
   }
 
@@ -117,5 +125,29 @@ class MyApp extends StatelessWidget {
         labelLarge:     TextStyle(color: textPrimary,   fontWeight: FontWeight.w600),
       ),
     );
+  }
+}
+
+class _AppLoader extends StatefulWidget {
+  const _AppLoader();
+
+  @override
+  State<_AppLoader> createState() => _AppLoaderState();
+}
+
+class _AppLoaderState extends State<_AppLoader> {
+  @override
+  void initState() {
+    super.initState();
+    // Cargar moneda después del login
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<CurrencyProvider>().load();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Supabase.instance.client.auth.currentSession;
+    return session != null ? const HomeScreen() : const LoginScreen();
   }
 }
