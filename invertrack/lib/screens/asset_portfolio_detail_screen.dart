@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:invertrack/screens/sell_asset_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/market_service.dart';
 import 'login_screen.dart';
@@ -441,32 +442,64 @@ class _AssetPortfolioDetailScreenState
           const SizedBox(height: 32),
 
           // ── BOTÓN ELIMINAR ───────────────────────────────────────────
-          SizedBox(
-            height: 52,
-            child: OutlinedButton.icon(
-              onPressed: _isDeleting ? null : _delete,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFFFF6B6B),
-                side: const BorderSide(
-                    color: Color(0xFFFF6B6B), width: 1.5),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
+          Row(
+            children: [
+              // Botón vender
+              Expanded(
+                child: SizedBox(
+                  height: 52,
+                  child: ElevatedButton.icon(
+                    onPressed: _isDeleting
+                        ? null
+                        : () async {
+                            final result = await Navigator.push<String>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    SellAssetScreen(asset: _liveAsset),
+                              ),
+                            );
+                            if (result == 'sold' && mounted) {
+                              Navigator.pop(context, 'deleted');
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _color,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                      elevation: 0,
+                    ),
+                    icon: const Icon(Icons.sell_rounded, size: 18),
+                    label: const Text('Vender',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                ),
               ),
-              icon: _isDeleting
-                  ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Color(0xFFFF6B6B)))
-                  : const Icon(Icons.delete_outline_rounded, size: 20),
-              label: Text(
-                _isDeleting
-                    ? 'Eliminando...'
-                    : 'Eliminar ${_liveAsset['name']} del portfolio',
-                style:
-                    const TextStyle(fontWeight: FontWeight.w600),
+              const SizedBox(width: 12),
+              // Botón eliminar (más pequeño, solo icono)
+              SizedBox(
+                height: 52,
+                child: OutlinedButton(
+                  onPressed: _isDeleting ? null : _delete,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFFF6B6B),
+                    side: const BorderSide(
+                        color: Color(0xFFFF6B6B), width: 1.5),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: _isDeleting
+                      ? const SizedBox(
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Color(0xFFFF6B6B)))
+                      : const Icon(Icons.delete_outline_rounded, size: 20),
+                ),
               ),
-            ),
+            ],
           ),
         ],
       ),

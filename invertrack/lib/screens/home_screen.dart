@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:invertrack/screens/add_asset_screen.dart';
 import 'package:invertrack/screens/asset_portfolio_detail_screen.dart';
 import 'package:invertrack/screens/profile_screen.dart';
+import 'package:invertrack/screens/sales_history_screen.dart';
 import 'package:invertrack/services/market_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -218,6 +219,20 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Historial de ventas',
+            icon: const Icon(Icons.receipt_long_rounded),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SalesHistoryScreen(
+                    onSaleUndone: _loadAssets, // ← callback
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Configuración',
             icon: const Icon(Icons.settings_rounded),
