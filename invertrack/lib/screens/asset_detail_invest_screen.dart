@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:invertrack/providers/currency_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/market_service.dart';
 
@@ -11,17 +13,16 @@ class AssetDetailInvestScreen extends StatefulWidget {
       _AssetDetailInvestScreenState();
 }
 
-// Modo de entrada de la inversión
 enum _InputMode { dinero, cantidad }
 
 class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
-  final supabase    = Supabase.instance.client;
-  final _formKey    = GlobalKey<FormState>();
-  final _buyPriceController  = TextEditingController(); // precio de compra
-  final _mainInputController = TextEditingController(); // dinero o cantidad
-  bool _isSaving     = false;
-  bool _loadingPrice = false;
-  _InputMode _inputMode = _InputMode.dinero;
+  final supabase             = Supabase.instance.client;
+  final _formKey             = GlobalKey<FormState>();
+  final _buyPriceController  = TextEditingController();
+  final _mainInputController = TextEditingController();
+  bool       _isSaving     = false;
+  bool       _loadingPrice = false;
+  _InputMode _inputMode    = _InputMode.dinero;
 
   late Map<String, dynamic> _asset;
 
@@ -47,13 +48,15 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
         _asset['type']   as String,
       );
       if (live != null && mounted) {
+        final cp = context.read<CurrencyProvider>();
         setState(() {
           _asset = {..._asset, ...live};
-          // Pre-rellenar precio de compra con el precio actual si está vacío
+          // Pre-rellenar precio en la moneda seleccionada si está vacío
           if (_buyPriceController.text.isEmpty && live['price'] != null) {
             final p = (live['price'] as num).toDouble();
             if (p > 0) {
-              _buyPriceController.text = p.toStringAsFixed(2);
+              _buyPriceController.text =
+                  cp.convert(p).toStringAsFixed(2);
             }
           }
         });
@@ -69,43 +72,51 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
     'etf':    Color(0xFF69F0AE),
   };
 
-  Color  get _color       => _typeColors[_asset['type']] ?? const Color(0xFF4FC3F7);
+  Color  get _color        => _typeColors[_asset['type']] ?? const Color(0xFF4FC3F7);
   double get _currentPrice => (_asset['price'] as num?)?.toDouble() ?? 0.0;
 
-  // Precio de compra que introdujo el usuario (o el actual si está vacío)
-  double get _buyPrice {
-    final v = double.tryParse(
+  // Precio de compra introducido por el usuario (en moneda local)
+  // → convertido a USD para guardar en BD
+  double _buyPriceUsd(CurrencyProvider cp) {
+    final raw = double.tryParse(
         _buyPriceController.text.replaceAll(',', '.')) ?? 0;
-    return v > 0 ? v : _currentPrice;
+    final localPrice = raw > 0 ? raw : cp.convert(_currentPrice);
+    // Si rate=1 (USD) no hace nada; si rate≠1 (EUR) divide para obtener USD
+    return cp.rate > 0 ? localPrice / cp.rate : localPrice;
   }
 
-  // Valor del campo principal (dinero o cantidad)
   double get _mainValue =>
       double.tryParse(_mainInputController.text.replaceAll(',', '.')) ?? 0;
 
-  // Cantidad comprada calculada
-  double get _quantity {
+  // Cantidad comprada en unidades del activo
+  double _quantityCalc(CurrencyProvider cp) {
     if (_inputMode == _InputMode.dinero) {
-      return _buyPrice > 0 ? _mainValue / _buyPrice : 0;
+      final buyUsd = _buyPriceUsd(cp);
+      // mainValue está en moneda local → convertir a USD
+      final mainUsd = cp.rate > 0 ? _mainValue / cp.rate : _mainValue;
+      return buyUsd > 0 ? mainUsd / buyUsd : 0;
     } else {
       return _mainValue;
     }
   }
 
-  // Dinero total invertido calculado
-  double get _totalInvested {
+  // Total invertido en USD (lo que se guarda en BD)
+  double _totalInvestedUsd(CurrencyProvider cp) {
     if (_inputMode == _InputMode.dinero) {
-      return _mainValue;
+      return cp.rate > 0 ? _mainValue / cp.rate : _mainValue;
     } else {
-      return _mainValue * _buyPrice;
+      return _mainValue * _buyPriceUsd(cp);
     }
   }
 
-  Future<void> _save() async {
+  Future<void> _save(CurrencyProvider cp) async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
     try {
-      final uid = supabase.auth.currentUser!.id;
+      final uid      = supabase.auth.currentUser!.id;
+      final qty      = _quantityCalc(cp);
+      final buyUsd   = _buyPriceUsd(cp);
+      final totalUsd = _totalInvestedUsd(cp);
 
       await supabase.from('assets').insert({
         'user_id':    uid,
@@ -113,9 +124,9 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
         'symbol':     _asset['symbol'],
         'type':       _asset['type'],
         'icon':       _asset['icon'],
-        'quantity':   _quantity,
-        'buy_price':  _buyPrice,
-        'value':      _totalInvested,
+        'quantity':   qty,
+        'buy_price':  buyUsd,   // siempre USD en BD
+        'value':      totalUsd, // siempre USD en BD
         'price':      _currentPrice,
         'change':     (_asset['change'] as num?)?.toDouble() ?? 0.0,
         'created_at': DateTime.now().toIso8601String(),
@@ -129,7 +140,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
           'icon':   _asset['icon'],
           'price':  _currentPrice,
           'change': (_asset['change'] as num?)?.toDouble() ?? 0.0,
-          'value':  _totalInvested,
+          'value':  totalUsd,
         });
       }
     } catch (e) {
@@ -146,16 +157,22 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final tt   = Theme.of(context).textTheme;
+    final tt = Theme.of(context).textTheme;
+    final cp = context.watch<CurrencyProvider>();
     final type = _asset['type'] as String;
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
 
-    final change = (_asset['change'] as num?)?.toDouble() ?? 0.0;
-    final isPos  = change >= 0;
+    final change    = (_asset['change'] as num?)?.toDouble() ?? 0.0;
+    final isPos     = change >= 0;
+    final qty       = _quantityCalc(cp);
+    final totalUsd  = _totalInvestedUsd(cp);
+    final buyUsd    = _buyPriceUsd(cp);
+    final hasValid  = _mainValue > 0 && buyUsd > 0;
 
-    final hasValidInput = _mainValue > 0 && _buyPrice > 0;
+    // Precio actual en moneda local para mostrar
+    final currentPriceLocal = cp.convert(_currentPrice);
 
     return Scaffold(
       appBar: AppBar(
@@ -221,7 +238,6 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
               ),
               child: Row(
                 children: [
-                  // Icono / thumb
                   Container(
                     width: 52, height: 52,
                     decoration: BoxDecoration(
@@ -279,7 +295,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                               )
                             : Text(
                                 _currentPrice > 0
-                                    ? '\$${_currentPrice.toStringAsFixed(2)}'
+                                    ? cp.format(_currentPrice)
                                     : '—',
                                 style: TextStyle(
                                   color: _color,
@@ -351,7 +367,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                 children: [
 
                   // ── PRECIO DE COMPRA ───────────────────────────────────
-                  Text('Precio al que compraste',
+                  Text('Precio al que compraste (${cp.currency})',
                       style: tt.bodyMedium?.copyWith(fontSize: 12)),
                   const SizedBox(height: 8),
                   TextFormField(
@@ -362,16 +378,16 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                     style: const TextStyle(
                         fontSize: 18, fontWeight: FontWeight.w600),
                     decoration: InputDecoration(
-                      hintText: _currentPrice > 0
-                          ? _currentPrice.toStringAsFixed(2)
+                      hintText: currentPriceLocal > 0
+                          ? currentPriceLocal.toStringAsFixed(2)
                           : '0.00',
-                      prefixText: '\$ ',
+                      prefixText: '${cp.symbol} ',
                       prefixStyle: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w600,
                           color: _color),
                       helperText: _currentPrice > 0
-                          ? 'Precio actual: \$${_currentPrice.toStringAsFixed(2)}'
+                          ? 'Precio actual: ${cp.format(_currentPrice)}'
                           : null,
                       helperStyle: tt.bodyMedium?.copyWith(fontSize: 11),
                       border: InputBorder.none,
@@ -382,8 +398,9 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                     ),
                     validator: (v) {
                       if (v == null || v.isEmpty) {
-                        // Si está vacío usamos el precio actual
-                        if (_currentPrice <= 0) return 'Ingresa el precio de compra';
+                        if (_currentPrice <= 0) {
+                          return 'Ingresa el precio de compra';
+                        }
                         return null;
                       }
                       final n = double.tryParse(v.replaceAll(',', '.'));
@@ -408,8 +425,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                             _mainInputController.clear();
                           }),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                vertical: 10),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
                             decoration: BoxDecoration(
                               color: _inputMode == _InputMode.dinero
                                   ? _color.withOpacity(0.15)
@@ -417,11 +433,9 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(
                                 color: _inputMode == _InputMode.dinero
-                                    ? _color
-                                    : borderColor,
+                                    ? _color : borderColor,
                                 width: _inputMode == _InputMode.dinero
-                                    ? 1.5
-                                    : 1,
+                                    ? 1.5 : 1,
                               ),
                             ),
                             child: Row(
@@ -456,8 +470,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                             _mainInputController.clear();
                           }),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                vertical: 10),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
                             decoration: BoxDecoration(
                               color: _inputMode == _InputMode.cantidad
                                   ? _color.withOpacity(0.15)
@@ -465,11 +478,9 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(
                                 color: _inputMode == _InputMode.cantidad
-                                    ? _color
-                                    : borderColor,
+                                    ? _color : borderColor,
                                 width: _inputMode == _InputMode.cantidad
-                                    ? 1.5
-                                    : 1,
+                                    ? 1.5 : 1,
                               ),
                             ),
                             child: Row(
@@ -511,14 +522,12 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                         fontSize: 22, fontWeight: FontWeight.bold),
                     decoration: InputDecoration(
                       labelText: _inputMode == _InputMode.dinero
-                          ? 'Dinero invertido'
+                          ? 'Dinero invertido (${cp.currency})'
                           : 'Cantidad comprada',
                       prefixText: _inputMode == _InputMode.dinero
-                          ? '\$ '
-                          : '',
+                          ? '${cp.symbol} ' : '',
                       suffixText: _inputMode == _InputMode.cantidad
-                          ? '  ${_asset['symbol']}'
-                          : '',
+                          ? '  ${_asset['symbol']}' : '',
                       prefixStyle: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,
@@ -546,13 +555,12 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                   ),
 
                   // ── RESUMEN CALCULADO ──────────────────────────────────
-                  if (hasValidInput) ...[
+                  if (hasValid) ...[
                     const SizedBox(height: 16),
                     Divider(color: borderColor, height: 1),
                     const SizedBox(height: 16),
 
                     if (_inputMode == _InputMode.dinero) ...[
-                      // Modo dinero → muestra la cantidad calculada
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -561,11 +569,11 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                           RichText(
                             text: TextSpan(children: [
                               TextSpan(
-                                text: _quantity < 0.001
-                                    ? _quantity.toStringAsFixed(8)
-                                    : _quantity < 1
-                                        ? _quantity.toStringAsFixed(6)
-                                        : _quantity.toStringAsFixed(4),
+                                text: qty < 0.001
+                                    ? qty.toStringAsFixed(8)
+                                    : qty < 1
+                                        ? qty.toStringAsFixed(6)
+                                        : qty.toStringAsFixed(4),
                                 style: TextStyle(
                                     color: _color,
                                     fontSize: 16,
@@ -580,14 +588,13 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                         ],
                       ),
                     ] else ...[
-                      // Modo cantidad → muestra el dinero total invertido
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text('Total invertido',
                               style: tt.bodyMedium?.copyWith(fontSize: 13)),
                           Text(
-                            '\$${_totalInvested.toStringAsFixed(2)}',
+                            cp.format(totalUsd),
                             style: TextStyle(
                                 color: _color,
                                 fontSize: 16,
@@ -599,20 +606,19 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
 
                     const SizedBox(height: 8),
 
-                    // Precio de compra usado
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text('Precio de compra usado',
                             style: tt.bodyMedium?.copyWith(fontSize: 13)),
-                        Text('\$${_buyPrice.toStringAsFixed(2)}',
-                            style: tt.bodyLarge?.copyWith(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500)),
+                        Text(
+                          cp.format(buyUsd),
+                          style: tt.bodyLarge?.copyWith(
+                              fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
                       ],
                     ),
 
-                    // Resumen final en card destacada
                     const SizedBox(height: 12),
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -620,8 +626,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                       decoration: BoxDecoration(
                         color: _color.withOpacity(0.08),
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: _color.withOpacity(0.25)),
+                        border: Border.all(color: _color.withOpacity(0.25)),
                       ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -633,11 +638,11 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                                   style: tt.bodyMedium
                                       ?.copyWith(fontSize: 11)),
                               Text(
-                                _quantity < 0.001
-                                    ? _quantity.toStringAsFixed(8)
-                                    : _quantity < 1
-                                        ? _quantity.toStringAsFixed(6)
-                                        : _quantity.toStringAsFixed(4),
+                                qty < 0.001
+                                    ? qty.toStringAsFixed(8)
+                                    : qty < 1
+                                        ? qty.toStringAsFixed(6)
+                                        : qty.toStringAsFixed(4),
                                 style: TextStyle(
                                     color: _color,
                                     fontSize: 14,
@@ -654,7 +659,7 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                                   style: tt.bodyMedium
                                       ?.copyWith(fontSize: 11)),
                               Text(
-                                '\$${_totalInvested.toStringAsFixed(2)}',
+                                cp.format(totalUsd),
                                 style: TextStyle(
                                     color: _color,
                                     fontSize: 14,
@@ -676,7 +681,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
             SizedBox(
               height: 52,
               child: ElevatedButton(
-                onPressed: (_isSaving || _currentPrice == 0) ? null : _save,
+                onPressed:
+                    (_isSaving || _currentPrice == 0) ? null : () => _save(cp),
                 style: ElevatedButton.styleFrom(
                   backgroundColor:
                       Theme.of(context).colorScheme.secondary,
@@ -687,8 +693,8 @@ class _AssetDetailInvestScreenState extends State<AssetDetailInvestScreen> {
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2.5))
                     : Text(
-                        hasValidInput
-                            ? 'Guardar inversión de \$${_totalInvested.toStringAsFixed(2)}'
+                        hasValid
+                            ? 'Guardar inversión de ${cp.format(totalUsd)}'
                             : 'Confirmar inversión',
                         style: const TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600),
@@ -931,8 +937,7 @@ class _EtfMetrics extends StatelessWidget {
         Expanded(child: _MetricCard(
             label: 'Expense Ratio',
             value: expense != null
-                ? '${expense.toStringAsFixed(2)}%'
-                : '—',
+                ? '${expense.toStringAsFixed(2)}%' : '—',
             icon: Icons.receipt_long_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Comisión anual de administración. Menor = mejor',
@@ -941,8 +946,7 @@ class _EtfMetrics extends StatelessWidget {
         Expanded(child: _MetricCard(
             label: 'Tracking Error',
             value: asset['tracking_error'] != null
-                ? '${asset['tracking_error']}%'
-                : '—',
+                ? '${asset['tracking_error']}%' : '—',
             icon: Icons.track_changes_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Desviación respecto al índice. Menor = más fiel')),
@@ -950,15 +954,13 @@ class _EtfMetrics extends StatelessWidget {
       const SizedBox(height: 10),
       Row(children: [
         Expanded(child: _MetricCard(
-            label: 'Índice',
-            value: asset['index'] ?? '—',
+            label: 'Índice', value: asset['index'] ?? '—',
             icon: Icons.list_alt_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Índice subyacente que replica el ETF')),
         const SizedBox(width: 10),
         Expanded(child: _MetricCard(
-            label: 'Estructura',
-            value: asset['structure'] ?? '—',
+            label: 'Estructura', value: asset['structure'] ?? '—',
             icon: Icons.account_tree_rounded, color: color,
             cardColor: cardColor, borderColor: borderColor,
             tooltip: 'Réplica total = compra física de activos del índice')),

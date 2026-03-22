@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:invertrack/providers/currency_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/market_service.dart';
 
@@ -35,46 +37,58 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
     'etf':    Color(0xFF69F0AE),
   };
 
-  Color  get _color     => _typeColors[widget.asset['type']] ?? const Color(0xFF4FC3F7);
-  double get _buyPrice  => (widget.asset['buy_price']  as num?)?.toDouble() ?? 0;
-  double get _quantity  => (widget.asset['quantity']   as num?)?.toDouble() ?? 0;
-  double get _invested  => (widget.asset['value']      as num?)?.toDouble() ?? 0;
+  Color  get _color    => _typeColors[widget.asset['type']] ?? const Color(0xFF4FC3F7);
+  double get _buyPrice => (widget.asset['buy_price'] as num?)?.toDouble() ?? 0;
+  double get _quantity => (widget.asset['quantity']  as num?)?.toDouble() ?? 0;
+  double get _invested => (widget.asset['value']     as num?)?.toDouble() ?? 0;
 
-  double get _sellPrice {
+  // Precio de venta siempre en USD internamente
+  double get _sellPriceUsd {
     if (_priceMode == _PriceMode.actual) return _livePrice;
-    return double.tryParse(
-            _sellPriceController.text.replaceAll(',', '.')) ??
-        _livePrice;
+    final cp = _cpOrNull;
+    final raw = double.tryParse(
+            _sellPriceController.text.replaceAll(',', '.')) ?? 0;
+    // Si el usuario escribió en la moneda local, convertir a USD
+    if (cp != null && cp.rate != 1.0 && raw > 0) return raw / cp.rate;
+    return raw > 0 ? raw : _livePrice;
   }
 
   double get _inputValue =>
       double.tryParse(_inputController.text.replaceAll(',', '.')) ?? 0;
 
-  // Cantidad a vender
+  // Cantidad a vender (siempre en unidades del activo)
   double get _quantityToSell {
     if (_sellMode == _SellMode.total) return _quantity;
     if (_inputMode == _InputMode.cantidad) return _inputValue;
-    return _sellPrice > 0 ? _inputValue / _sellPrice : 0;
+    // inputValue está en moneda local → convertir a USD para calcular unidades
+    final cp = _cpOrNull;
+    final inputUsd = (cp != null && cp.rate != 1.0)
+        ? _inputValue / cp.rate
+        : _inputValue;
+    return _sellPriceUsd > 0 ? inputUsd / _sellPriceUsd : 0;
   }
 
-  // Dinero que recibirías
-  double get _totalReceived => _quantityToSell * _sellPrice;
-
-  // Coste proporcional de lo que vendes
-  double get _costBasis {
+  double get _totalReceivedUsd => _quantityToSell * _sellPriceUsd;
+  double get _costBasisUsd {
     if (_quantity <= 0) return 0;
     return (_quantityToSell / _quantity) * _invested;
   }
-
-  // Ganancia/pérdida
-  double get _gainLoss => _totalReceived - _costBasis;
+  double get _gainLossUsd     => _totalReceivedUsd - _costBasisUsd;
   double get _gainLossPct =>
-      _costBasis > 0 ? (_gainLoss / _costBasis) * 100 : 0;
+      _costBasisUsd > 0 ? (_gainLossUsd / _costBasisUsd) * 100 : 0;
 
   bool get _hasValidInput =>
       _sellMode == _SellMode.total
-          ? _sellPrice > 0
-          : _inputValue > 0 && _sellPrice > 0;
+          ? _sellPriceUsd > 0
+          : _inputValue > 0 && _sellPriceUsd > 0;
+
+  CurrencyProvider? get _cpOrNull {
+    try {
+      return Provider.of<CurrencyProvider>(context, listen: false);
+    } catch (_) {
+      return null;
+    }
+  }
 
   @override
   void initState() {
@@ -98,7 +112,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
         widget.asset['type']   as String,
       );
       if (live != null && mounted) {
-        setState(() => _livePrice = (live['price'] as num?)?.toDouble() ?? _livePrice);
+        setState(() =>
+            _livePrice = (live['price'] as num?)?.toDouble() ?? _livePrice);
       }
     } finally {
       if (mounted) setState(() => _loadingPrice = false);
@@ -108,7 +123,6 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
   Future<void> _confirmSell() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // Validar que no vende más de lo que tiene
     if (_quantityToSell > _quantity + 0.000001) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('No puedes vender más de lo que tienes'),
@@ -117,12 +131,14 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
       return;
     }
 
-    // Diálogo de confirmación
+    final cp = context.read<CurrencyProvider>();
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF111827),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text('Confirmar venta',
             style: Theme.of(context)
                 .textTheme
@@ -134,7 +150,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
           children: [
             _ConfirmRow(
                 label: 'Activo',
-                value: '${widget.asset['name']} (${widget.asset['symbol']})'),
+                value:
+                    '${widget.asset['name']} (${widget.asset['symbol']})'),
             _ConfirmRow(
                 label: 'Cantidad a vender',
                 value: _quantityToSell < 0.001
@@ -142,16 +159,16 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                     : _quantityToSell.toStringAsFixed(6)),
             _ConfirmRow(
                 label: 'Precio de venta',
-                value: '\$${_sellPrice.toStringAsFixed(2)}'),
+                value: cp.format(_sellPriceUsd)),
             _ConfirmRow(
                 label: 'Recibirás',
-                value: '\$${_totalReceived.toStringAsFixed(2)}'),
+                value: cp.format(_totalReceivedUsd)),
             const SizedBox(height: 8),
             _ConfirmRow(
               label: 'Ganancia / Pérdida',
               value:
-                  '${_gainLoss >= 0 ? '+' : ''}\$${_gainLoss.toStringAsFixed(2)} (${_gainLossPct.toStringAsFixed(2)}%)',
-              valueColor: _gainLoss >= 0
+                  '${_gainLossUsd >= 0 ? '+' : ''}${cp.format(_gainLossUsd)} (${_gainLossPct.toStringAsFixed(2)}%)',
+              valueColor: _gainLossUsd >= 0
                   ? const Color(0xFF69F0AE)
                   : const Color(0xFFFF6B6B),
             ),
@@ -164,11 +181,9 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text(
-              'Confirmar venta',
-              style: TextStyle(
-                  color: _color, fontWeight: FontWeight.w600),
-            ),
+            child: Text('Confirmar venta',
+                style: TextStyle(
+                    color: _color, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -181,34 +196,31 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
       final uid         = supabase.auth.currentUser!.id;
       final assetId     = widget.asset['id'] as String?;
       final newQuantity = _quantity - _quantityToSell;
-      final newInvested = _invested - _costBasis;
+      final newInvested = _invested - _costBasisUsd;
 
-      // Registrar venta en tabla sales
+      // Guardamos siempre en USD en la BD
       await supabase.from('sales').insert({
-        'user_id':         uid,
-        'asset_id':        assetId,
-        'name':            widget.asset['name'],
-        'symbol':          widget.asset['symbol'],
-        'type':            widget.asset['type'],
-        'icon':            widget.asset['icon'],
-        'quantity_sold':   _quantityToSell,
-        'sell_price':      _sellPrice,
-        'buy_price':       _buyPrice,
-        'total_sold':      _totalReceived,
-        'total_invested':  _costBasis,
-        'gain_loss':       _gainLoss,
-        'gain_loss_pct':   _gainLossPct,
-        'sold_at':         DateTime.now().toIso8601String(),
+        'user_id':        uid,
+        'asset_id':       assetId,
+        'name':           widget.asset['name'],
+        'symbol':         widget.asset['symbol'],
+        'type':           widget.asset['type'],
+        'icon':           widget.asset['icon'],
+        'quantity_sold':  _quantityToSell,
+        'sell_price':     _sellPriceUsd,
+        'buy_price':      _buyPrice,
+        'total_sold':     _totalReceivedUsd,
+        'total_invested': _costBasisUsd,
+        'gain_loss':      _gainLossUsd,
+        'gain_loss_pct':  _gainLossPct,
+        'sold_at':        DateTime.now().toIso8601String(),
       });
 
-      // Actualizar o eliminar el activo
       if (newQuantity <= 0.000001 || _sellMode == _SellMode.total) {
-        // Venta total → eliminar
         if (assetId != null) {
           await supabase.from('assets').delete().eq('id', assetId);
         }
       } else {
-        // Venta parcial → actualizar cantidad e invertido
         if (assetId != null) {
           await supabase.from('assets').update({
             'quantity': newQuantity,
@@ -217,9 +229,7 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
         }
       }
 
-      if (mounted) {
-        Navigator.pop(context, 'sold');
-      }
+      if (mounted) Navigator.pop(context, 'sold');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -235,14 +245,20 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
+    final cp = context.watch<CurrencyProvider>();
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
 
-    final gainIsPos = _gainLoss >= 0;
+    final gainIsPos = _gainLossUsd >= 0;
     final gainColor = gainIsPos
         ? const Color(0xFF69F0AE)
         : const Color(0xFFFF6B6B);
+
+    // Precio actual mostrado en moneda seleccionada
+    final livePriceFmt = _livePrice > 0
+        ? cp.format(_livePrice)
+        : '—';
 
     return Scaffold(
       appBar: AppBar(
@@ -342,7 +358,7 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                           style: tt.bodyMedium?.copyWith(fontSize: 12),
                         ),
                         Text(
-                          'Precio de compra: \$${_buyPrice.toStringAsFixed(2)}',
+                          'Precio de compra: ${cp.format(_buyPrice)}',
                           style: tt.bodyMedium?.copyWith(fontSize: 12),
                         ),
                       ],
@@ -351,15 +367,11 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text(
-                        _livePrice > 0
-                            ? '\$${_livePrice.toStringAsFixed(2)}'
-                            : '—',
-                        style: TextStyle(
-                            color: _color,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold),
-                      ),
+                      Text(livePriceFmt,
+                          style: TextStyle(
+                              color: _color,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
                       Text('precio actual',
                           style: tt.bodyMedium?.copyWith(fontSize: 10)),
                     ],
@@ -382,7 +394,6 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
               ),
               child: Column(
                 children: [
-                  // Selector precio actual / manual
                   Row(
                     children: [
                       Expanded(
@@ -393,9 +404,7 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                           }),
                           child: _ModeButton(
                             label: 'Precio actual',
-                            sublabel: _livePrice > 0
-                                ? '\$${_livePrice.toStringAsFixed(2)}'
-                                : '—',
+                            sublabel: livePriceFmt,
                             icon: Icons.bolt_rounded,
                             isSelected: _priceMode == _PriceMode.actual,
                             color: _color,
@@ -410,7 +419,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                               () => _priceMode = _PriceMode.manual),
                           child: _ModeButton(
                             label: 'Precio manual',
-                            sublabel: 'Introduce el precio',
+                            sublabel:
+                                'En ${cp.currency}',
                             icon: Icons.edit_rounded,
                             isSelected: _priceMode == _PriceMode.manual,
                             color: _color,
@@ -420,8 +430,6 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                       ),
                     ],
                   ),
-
-                  // Campo precio manual
                   if (_priceMode == _PriceMode.manual) ...[
                     const SizedBox(height: 16),
                     TextFormField(
@@ -432,8 +440,9 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                       style: const TextStyle(
                           fontSize: 20, fontWeight: FontWeight.w600),
                       decoration: InputDecoration(
-                        labelText: 'Precio al que vendiste',
-                        prefixText: '\$ ',
+                        labelText:
+                            'Precio al que vendiste (${cp.currency})',
+                        prefixText: '${cp.symbol} ',
                         prefixStyle: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w600,
@@ -476,7 +485,6 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
               ),
               child: Column(
                 children: [
-                  // Selector total / parcial
                   Row(
                     children: [
                       Expanded(
@@ -487,7 +495,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                           }),
                           child: _ModeButton(
                             label: 'Vender todo',
-                            sublabel: '${_quantity < 0.001 ? _quantity.toStringAsFixed(8) : _quantity.toStringAsFixed(4)} ${widget.asset['symbol']}',
+                            sublabel:
+                                '${_quantity < 0.001 ? _quantity.toStringAsFixed(8) : _quantity.toStringAsFixed(4)} ${widget.asset['symbol']}',
                             icon: Icons.sell_rounded,
                             isSelected: _sellMode == _SellMode.total,
                             color: _color,
@@ -512,14 +521,10 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                       ),
                     ],
                   ),
-
-                  // Campos de venta parcial
                   if (_sellMode == _SellMode.parcial) ...[
                     const SizedBox(height: 16),
                     Divider(color: borderColor, height: 1),
                     const SizedBox(height: 16),
-
-                    // Selector dinero / cantidad
                     Row(
                       children: [
                         Expanded(
@@ -542,7 +547,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                                       : borderColor,
                                 ),
                               ),
-                              child: Text('Por importe (\$)',
+                              child: Text(
+                                  'Por importe (${cp.symbol})',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     color: _inputMode == _InputMode.dinero
@@ -573,19 +579,17 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(
-                                  color:
-                                      _inputMode == _InputMode.cantidad
-                                          ? _color.withOpacity(0.5)
-                                          : borderColor,
+                                  color: _inputMode == _InputMode.cantidad
+                                      ? _color.withOpacity(0.5)
+                                      : borderColor,
                                 ),
                               ),
                               child: Text('Por cantidad',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
-                                    color:
-                                        _inputMode == _InputMode.cantidad
-                                            ? _color
-                                            : const Color(0xFF7BA7C2),
+                                    color: _inputMode == _InputMode.cantidad
+                                        ? _color
+                                        : const Color(0xFF7BA7C2),
                                     fontSize: 12,
                                     fontWeight:
                                         _inputMode == _InputMode.cantidad
@@ -597,9 +601,7 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 16),
-
                     TextFormField(
                       controller: _inputController,
                       keyboardType: const TextInputType.numberWithOptions(
@@ -609,10 +611,11 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                           fontSize: 22, fontWeight: FontWeight.bold),
                       decoration: InputDecoration(
                         labelText: _inputMode == _InputMode.dinero
-                            ? 'Importe a vender'
+                            ? 'Importe a vender (${cp.currency})'
                             : 'Cantidad a vender',
-                        prefixText:
-                            _inputMode == _InputMode.dinero ? '\$ ' : '',
+                        prefixText: _inputMode == _InputMode.dinero
+                            ? '${cp.symbol} '
+                            : '',
                         suffixText: _inputMode == _InputMode.cantidad
                             ? '  ${widget.asset['symbol']}'
                             : '',
@@ -659,8 +662,8 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                 decoration: BoxDecoration(
                   color: cardColor,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                      color: gainColor.withOpacity(0.3)),
+                  border:
+                      Border.all(color: gainColor.withOpacity(0.3)),
                 ),
                 child: Column(
                   children: [
@@ -674,13 +677,13 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                     Divider(height: 20, color: const Color(0xFF1E3A5F)),
                     _SummaryRow(
                       label: 'Precio de venta',
-                      value: '\$${_sellPrice.toStringAsFixed(2)}',
+                      value: cp.format(_sellPriceUsd),
                       tt: tt,
                     ),
                     Divider(height: 20, color: const Color(0xFF1E3A5F)),
                     _SummaryRow(
                       label: 'Recibirás',
-                      value: '\$${_totalReceived.toStringAsFixed(2)}',
+                      value: cp.format(_totalReceivedUsd),
                       tt: tt,
                       valueStyle: TextStyle(
                           color: _color,
@@ -690,16 +693,15 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                     Divider(height: 20, color: const Color(0xFF1E3A5F)),
                     _SummaryRow(
                       label: 'Coste de compra',
-                      value: '\$${_costBasis.toStringAsFixed(2)}',
+                      value: cp.format(_costBasisUsd),
                       tt: tt,
                     ),
                     Divider(height: 20, color: const Color(0xFF1E3A5F)),
                     _SummaryRow(
-                      label: gainIsPos
-                          ? 'Ganancia neta'
-                          : 'Pérdida neta',
+                      label:
+                          gainIsPos ? 'Ganancia neta' : 'Pérdida neta',
                       value:
-                          '${gainIsPos ? '+' : ''}\$${_gainLoss.toStringAsFixed(2)} (${gainIsPos ? '+' : ''}${_gainLossPct.toStringAsFixed(2)}%)',
+                          '${gainIsPos ? '+' : ''}${cp.format(_gainLossUsd)} (${gainIsPos ? '+' : ''}${_gainLossPct.toStringAsFixed(2)}%)',
                       tt: tt,
                       valueStyle: TextStyle(
                           color: gainColor,
@@ -717,8 +719,9 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
             SizedBox(
               height: 52,
               child: ElevatedButton(
-                onPressed:
-                    (_isSaving || !_hasValidInput) ? null : _confirmSell,
+                onPressed: (_isSaving || !_hasValidInput)
+                    ? null
+                    : _confirmSell,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _color,
                   foregroundColor: Colors.white,
@@ -733,7 +736,7 @@ class _SellAssetScreenState extends State<SellAssetScreen> {
                             color: Colors.white, strokeWidth: 2.5))
                     : Text(
                         _hasValidInput
-                            ? 'Vender por \$${_totalReceived.toStringAsFixed(2)}'
+                            ? 'Vender por ${cp.format(_totalReceivedUsd)}'
                             : 'Confirmar venta',
                         style: const TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600),
@@ -767,7 +770,9 @@ class _ModeButton extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
       decoration: BoxDecoration(
-        color: isSelected ? color.withOpacity(0.12) : const Color(0xFF0A0E1A),
+        color: isSelected
+            ? color.withOpacity(0.12)
+            : const Color(0xFF0A0E1A),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: isSelected ? color.withOpacity(0.6) : borderColor,
@@ -777,7 +782,8 @@ class _ModeButton extends StatelessWidget {
       child: Column(
         children: [
           Icon(icon,
-              color: isSelected ? color : const Color(0xFF7BA7C2), size: 18),
+              color: isSelected ? color : const Color(0xFF7BA7C2),
+              size: 18),
           const SizedBox(height: 5),
           Text(label,
               style: TextStyle(
@@ -815,8 +821,8 @@ class _SummaryRow extends StatelessWidget {
         Text(label, style: tt.bodyMedium?.copyWith(fontSize: 13)),
         Text(value,
             style: valueStyle ??
-                tt.bodyLarge
-                    ?.copyWith(fontSize: 13, fontWeight: FontWeight.w500)),
+                tt.bodyLarge?.copyWith(
+                    fontSize: 13, fontWeight: FontWeight.w500)),
       ],
     );
   }
@@ -826,7 +832,8 @@ class _ConfirmRow extends StatelessWidget {
   final String label;
   final String value;
   final Color? valueColor;
-  const _ConfirmRow({required this.label, required this.value, this.valueColor});
+  const _ConfirmRow(
+      {required this.label, required this.value, this.valueColor});
 
   @override
   Widget build(BuildContext context) {
@@ -856,6 +863,8 @@ class _SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(label.toUpperCase(),
         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.w600));
+            fontSize: 11,
+            letterSpacing: 1.2,
+            fontWeight: FontWeight.w600));
   }
 }

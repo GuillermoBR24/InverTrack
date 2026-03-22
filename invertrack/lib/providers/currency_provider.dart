@@ -82,4 +82,11 @@ class CurrencyProvider extends ChangeNotifier {
 
     notifyListeners();
   }
+
+  /// Resetea a USD sin tocar la BD (para cuando se cierra sesión)
+  void reset() {
+    _currency = 'USD';
+    _rate     = 1.0;
+    notifyListeners();
+  }
 }

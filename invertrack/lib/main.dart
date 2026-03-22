@@ -1,6 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:invertrack/providers/currency_provider.dart';
 import 'package:invertrack/screens/home_screen.dart';
+import 'package:invertrack/services/alert_background_service.dart';
+import 'package:invertrack/services/notification_service.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/login_screen.dart';
@@ -12,6 +15,14 @@ void main() async {
     url: 'https://hrnomqqtvdupinzstmem.supabase.co',
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhybm9tcXF0dmR1cGluenN0bWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2MjgyNDMsImV4cCI6MjA4ODIwNDI0M30.tr5yTWo0HW0yzRKe80qDIHozydLtrOAfu5EQWZd0Mzw',
   );
+  
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS)) {
+    await NotificationService.init();
+    await AlertBackgroundService.initialize();
+    await AlertBackgroundService.startService();
+  }
 
   runApp(
     ChangeNotifierProvider(
@@ -139,10 +150,26 @@ class _AppLoaderState extends State<_AppLoader> {
   @override
   void initState() {
     super.initState();
-    // Cargar moneda después del login
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CurrencyProvider>().load();
+      _loadCurrencyIfLoggedIn();
     });
+
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      if (!mounted) return;
+      if (data.event == AuthChangeEvent.signedIn) {
+        context.read<CurrencyProvider>().load();
+      } else if (data.event == AuthChangeEvent.signedOut) {
+        context.read<CurrencyProvider>().reset();
+      }
+    });
+  }
+
+  void _loadCurrencyIfLoggedIn() {
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session != null && mounted) {
+      context.read<CurrencyProvider>().load();
+    }
   }
 
   @override

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:invertrack/providers/currency_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SalesHistoryScreen extends StatefulWidget {
@@ -20,7 +22,8 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
     'etf':    Color(0xFF69F0AE),
   };
 
-  double get _totalGain => _sales.fold(
+  // Total siempre en USD (lo que está en BD)
+  double get _totalGainUsd => _sales.fold(
       0, (s, a) => s + ((a['gain_loss'] as num?)?.toDouble() ?? 0));
 
   @override
@@ -58,8 +61,8 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF111827),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
         title: Text('Deshacer venta',
             style: Theme.of(context)
                 .textTheme
@@ -98,7 +101,6 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
       final totalInvested = (sale['total_invested'] as num).toDouble();
       final buyPrice      = (sale['buy_price']      as num).toDouble();
 
-      // Restaurar activo
       if (assetId != null) {
         final existing = await supabase
             .from('assets')
@@ -145,16 +147,15 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
         });
       }
 
-      // Eliminar la venta de Supabase
-      print('Intentando eliminar sale con id: $saleId (tipo: ${saleId.runtimeType})');
-      final deleteResult = await supabase.from('sales').delete().eq('id', saleId).select();
+      final deleteResult = await supabase
+          .from('sales')
+          .delete()
+          .eq('id', saleId)
+          .select();
       print('Venta eliminada de BD: $deleteResult');
 
-      // Actualizar la lista local inmediatamente sin esperar a Supabase
       if (mounted) {
-        setState(() {
-          _sales.removeWhere((s) => s['id'] == saleId);
-        });
+        setState(() => _sales.removeWhere((s) => s['id'] == saleId));
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Venta deshecha correctamente')),
         );
@@ -174,11 +175,13 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   Widget build(BuildContext context) {
     final tt     = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
+    final cp     = context.watch<CurrencyProvider>();
 
     const cardColor   = Color(0xFF1E2D3D);
     const borderColor = Color(0xFF1E3A5F);
 
-    final totalIsPos = _totalGain >= 0;
+    final totalGain  = cp.convert(_totalGainUsd);
+    final totalIsPos = totalGain >= 0;
     final totalColor = totalIsPos
         ? const Color(0xFF69F0AE)
         : const Color(0xFFFF6B6B);
@@ -202,8 +205,8 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                   ? ListView(
                       children: [
                         SizedBox(
-                            height: MediaQuery.of(context).size.height *
-                                0.35),
+                            height:
+                                MediaQuery.of(context).size.height * 0.35),
                         Center(
                           child: Column(
                             children: [
@@ -211,8 +214,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                   size: 52,
                                   color: const Color(0xFF7BA7C2)),
                               const SizedBox(height: 12),
-                              Text(
-                                  'Aún no tienes ventas registradas',
+                              Text('Aún no tienes ventas registradas',
                                   style: tt.bodyLarge?.copyWith(
                                       fontWeight: FontWeight.w600)),
                               const SizedBox(height: 6),
@@ -224,8 +226,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                       ],
                     )
                   : ListView(
-                      padding:
-                          const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
                       children: [
 
                         // ── RESUMEN TOTAL ──────────────────────────────
@@ -267,7 +268,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                           ?.copyWith(fontSize: 12),
                                     ),
                                     Text(
-                                      '${totalIsPos ? '+' : ''}\$${_totalGain.toStringAsFixed(2)}',
+                                      '${totalIsPos ? '+' : ''}${cp.format(_totalGainUsd)}',
                                       style: TextStyle(
                                         color: totalColor,
                                         fontSize: 28,
@@ -298,20 +299,32 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
 
                         // ── LISTA DE VENTAS ────────────────────────────
                         ..._sales.map((sale) {
-                          final gain    = (sale['gain_loss'] as num?)?.toDouble() ?? 0;
-                          final gainPct = (sale['gain_loss_pct'] as num?)?.toDouble() ?? 0;
-                          final gainPos = gain >= 0;
+                          final gainUsd = (sale['gain_loss'] as num?)
+                                  ?.toDouble() ??
+                              0;
+                          final gainPct =
+                              (sale['gain_loss_pct'] as num?)?.toDouble() ??
+                                  0;
+                          final gainPos = gainUsd >= 0;
                           final gainCol = gainPos
                               ? const Color(0xFF69F0AE)
                               : const Color(0xFFFF6B6B);
-                          final typeCol =
-                              _typeColors[sale['type']] ??
-                                  const Color(0xFF4FC3F7);
+                          final typeCol = _typeColors[sale['type']] ??
+                              const Color(0xFF4FC3F7);
                           final soldAt = DateTime.tryParse(
                               sale['sold_at'] as String? ?? '');
                           final dateStr = soldAt != null
                               ? '${soldAt.day.toString().padLeft(2, '0')}/${soldAt.month.toString().padLeft(2, '0')}/${soldAt.year}  ${soldAt.hour.toString().padLeft(2, '0')}:${soldAt.minute.toString().padLeft(2, '0')}'
                               : '—';
+
+                          final totalSoldUsd =
+                              (sale['total_sold'] as num?)?.toDouble() ?? 0;
+                          final totalInvestedUsd =
+                              (sale['total_invested'] as num?)?.toDouble() ??
+                                  0;
+                          final qtySold =
+                              (sale['quantity_sold'] as num?)?.toDouble() ??
+                                  0;
 
                           return Container(
                             margin: const EdgeInsets.only(bottom: 10),
@@ -326,7 +339,6 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    // Icono
                                     Container(
                                       width: 42, height: 42,
                                       decoration: BoxDecoration(
@@ -344,8 +356,6 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 12),
-
-                                    // Nombre + fecha
                                     Expanded(
                                       child: Column(
                                         crossAxisAlignment:
@@ -365,25 +375,23 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                         ],
                                       ),
                                     ),
-
-                                    // Ganancia/pérdida
                                     Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.end,
                                       children: [
                                         Text(
-                                          '${gainPos ? '+' : ''}\$${gain.toStringAsFixed(2)}',
+                                          '${gainPos ? '+' : ''}${cp.format(gainUsd)}',
                                           style: TextStyle(
                                               color: gainCol,
                                               fontSize: 15,
                                               fontWeight: FontWeight.bold),
                                         ),
                                         Container(
-                                          padding: const EdgeInsets
-                                              .symmetric(
+                                          padding: const EdgeInsets.symmetric(
                                               horizontal: 7, vertical: 2),
                                           decoration: BoxDecoration(
-                                            color: gainCol.withOpacity(0.12),
+                                            color:
+                                                gainCol.withOpacity(0.12),
                                             borderRadius:
                                                 BorderRadius.circular(5),
                                           ),
@@ -392,7 +400,8 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                             style: TextStyle(
                                                 color: gainCol,
                                                 fontSize: 11,
-                                                fontWeight: FontWeight.w600),
+                                                fontWeight:
+                                                    FontWeight.w600),
                                           ),
                                         ),
                                       ],
@@ -404,33 +413,28 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                 Divider(height: 1, color: borderColor),
                                 const SizedBox(height: 12),
 
-                                // Detalles + botón deshacer
                                 Row(
                                   children: [
                                     _DetailChip(
                                       label: 'Vendido',
-                                      value: '\$${(sale['total_sold'] as num?)?.toStringAsFixed(2) ?? '—'}',
+                                      value: cp.format(totalSoldUsd),
                                       color: typeCol,
                                     ),
                                     const SizedBox(width: 12),
                                     _DetailChip(
                                       label: 'Comprado',
-                                      value: '\$${(sale['total_invested'] as num?)?.toStringAsFixed(2) ?? '—'}',
+                                      value: cp.format(totalInvestedUsd),
                                       color: const Color(0xFF7BA7C2),
                                     ),
                                     const SizedBox(width: 12),
                                     _DetailChip(
                                       label: 'Cantidad',
-                                      value: () {
-                                        final q = (sale['quantity_sold'] as num?)?.toDouble() ?? 0;
-                                        return q < 0.001
-                                            ? q.toStringAsFixed(6)
-                                            : q.toStringAsFixed(4);
-                                      }(),
+                                      value: qtySold < 0.001
+                                          ? qtySold.toStringAsFixed(6)
+                                          : qtySold.toStringAsFixed(4),
                                       color: const Color(0xFF7BA7C2),
                                     ),
                                     const Spacer(),
-                                    // Botón deshacer
                                     GestureDetector(
                                       onTap: () => _undoSale(sale),
                                       child: Container(
@@ -445,17 +449,16 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                         ),
                                         child: Row(
                                           children: [
-                                            Icon(
-                                              Icons.undo_rounded,
-                                              size: 14,
-                                              color: scheme.primary,
-                                            ),
+                                            Icon(Icons.undo_rounded,
+                                                size: 14,
+                                                color: scheme.primary),
                                             const SizedBox(width: 4),
                                             Text('Deshacer',
                                                 style: TextStyle(
                                                   color: scheme.primary,
                                                   fontSize: 11,
-                                                  fontWeight: FontWeight.w600,
+                                                  fontWeight:
+                                                      FontWeight.w600,
                                                 )),
                                           ],
                                         ),

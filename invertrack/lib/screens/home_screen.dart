@@ -4,6 +4,7 @@ import 'package:invertrack/screens/add_asset_screen.dart';
 import 'package:invertrack/screens/asset_portfolio_detail_screen.dart';
 import 'package:invertrack/screens/profile_screen.dart';
 import 'package:invertrack/screens/sales_history_screen.dart';
+import 'package:invertrack/screens/price_alerts_screen.dart';
 import 'package:invertrack/services/market_service.dart';
 import 'package:provider/provider.dart';
 import 'package:invertrack/providers/currency_provider.dart';
@@ -203,6 +204,15 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Alertas de precio',
+            icon: const Icon(Icons.notifications_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => const PriceAlertsScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'Historial de ventas',
             icon: const Icon(Icons.receipt_long_rounded),
